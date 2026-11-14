@@ -202,6 +202,7 @@ cargo test              # 单元测试（不触网）
 - 仅生成与验证了 Apple Silicon（arm64）产物，未出 Intel / universal 构建。
 - `Info.plist`：`app.videoflow.desktop` / `0.1.0` / `LSMinimumSystemVersion 11.0` / `public.app-category.video`。
 - `.app` 内除主程序与 sidecar 外只有 `Resources/icon.icns`，无任何第三方许可证声明文件。
+- sidecar 体积 36MB，**不纳入版本库**（`.gitignore` 已忽略 `src-tauri/binaries/`）；首次构建前执行 `./scripts/fetch-yt-dlp.sh`，脚本按固定版本 `2026.10.26` 与 sha256 校验下载。
 
 ### 10.3 签名、Hardened Runtime 与公证
 
