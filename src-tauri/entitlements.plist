@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    yt-dlp 以 PyInstaller onefile 形式分发：运行时会把自己内嵌的 Python.framework
+    解压到临时目录再 dlopen。该 framework 携带的是上游签名（Team ID 与我们不同），
+    在启用 Hardened Runtime 的进程里会被 library validation 拒绝加载。
+    因此需要关闭 library validation，否则签名后的 sidecar 完全无法执行。
+  -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

@@ -1,0 +1,27 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# sidecar 二进制（约 36MB，用 scripts/fetch-yt-dlp.sh 获取）
+src-tauri/binaries/
+
+# 本地配置
+.env
+.env.local
+*.local
+
+# 系统与编辑器
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.qoder/
+
+# 日志与临时文件
+*.log
+*.tmp
