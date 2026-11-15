@@ -1,13 +1,16 @@
 name: Release
 
-# 发布流水线（Phase 2：未签名内部产物）
+# 发布流水线（Phase 3：Developer ID 签名，未公证）
+#
+# 签名模式只由 Secrets 决定，不做隐式降级：
+#   * APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY 三者齐备 → developer-id
+#   * 三者全空                                                                     → unsigned（仅内部 Artifact）
+#   * 只配置了一部分                                                               → 立即失败
+#   * tag(v*) 触发且未配置签名 Secrets                                             → 立即失败（正式 Release 不接受未签名产物）
 #
 # 本阶段刻意不做的事：
-#   * 不接入 Developer ID 签名 Secrets（Phase 3）
 #   * 不创建 GitHub Release（Phase 4）
 #   * 不执行 Apple Notarization（本轮要求，保留 REQUIRE_NOTARIZATION 开关）
-#
-# 因此产物一律视为"内部测试 Artifact"：未签名、未公证，不能对外分发。
 
 on:
   push:
@@ -83,19 +86,42 @@ jobs:
           fi
           echo "version=${pkg}" >> "$GITHUB_OUTPUT"
 
-      - name: 判定签名模式
+      - name: 判定签名模式（严格：齐备或全空，不允许半配置）
         id: signing
         env:
-          # 只读判断是否配置了 Secrets，不输出任何凭据内容
+          # 只判断是否存在，不输出任何凭据内容
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          if [ -n "${APPLE_CERTIFICATE}" ] && [ -n "${APPLE_SIGNING_IDENTITY}" ]; then
-            echo "mode=developer-id" >> "$GITHUB_OUTPUT"
-            echo "检测到 Developer ID Secrets"
+          set -euo pipefail
+          have=0
+          if [ -n "${APPLE_CERTIFICATE}" ]; then have=$((have + 1)); fi
+          if [ -n "${APPLE_CERTIFICATE_PASSWORD}" ]; then have=$((have + 1)); fi
+          if [ -n "${APPLE_SIGNING_IDENTITY}" ]; then have=$((have + 1)); fi
+
+          if [ "$have" -eq 3 ]; then
+            mode=developer-id
+            echo "检测到完整的 Developer ID Secrets（3/3）"
+          elif [ "$have" -eq 0 ]; then
+            mode=unsigned
+            echo "未配置 Developer ID Secrets（0/3）"
           else
-            echo "mode=unsigned" >> "$GITHUB_OUTPUT"
-            echo "未配置 Developer ID Secrets"
+            echo "::error::Developer ID Secrets 只配置了 ${have}/3：APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY 必须全部配置或全部留空，发布中止"
+            exit 1
+          fi
+
+          # tag 触发意味着要发正式版；未签名产物不允许成为正式 Release
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "$mode" = "unsigned" ]; then
+            echo "::error::这是 tag 触发的发布构建，但未配置 Developer ID Secrets；未签名产物不能作为正式 Release。请配置三个签名 Secrets，或改用 workflow_dispatch 做内部构建"
+            exit 1
+          fi
+
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+          if [ "$mode" = "developer-id" ]; then
+            echo "signing_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signing_ready=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 发布条件汇总
@@ -107,8 +133,8 @@ jobs:
             echo "| --- | --- |"
             echo "| 版本 | ${{ steps.version.outputs.version }} |"
             echo "| 目标 | aarch64-apple-darwin |"
-            echo "| 签名 Secrets | $([ "${{ steps.signing.outputs.mode }}" = "developer-id" ] && echo 已配置 || echo 未配置) |"
-            echo "| 本轮签名模式 | unsigned（Phase 2 固定，Phase 3 接入） |"
+            echo "| 签名 Secrets | $([ "${{ steps.signing.outputs.mode }}" = "developer-id" ] && echo "3/3 已配置" || echo "未配置") |"
+            echo "| 本次签名模式 | ${{ steps.signing.outputs.mode }} |"
             echo "| 公证状态 | ${NOTARIZATION_STATUS} |"
             echo "| REQUIRE_NOTARIZATION | ${REQUIRE_NOTARIZATION} |"
             echo "| GitHub Release | 不创建（Phase 4 接入） |"
@@ -120,14 +146,14 @@ jobs:
     uses: ./.github/workflows/ffmpeg-lgpl.yml
 
   build:
-    name: 构建 / 校验 / 打包（未签名内部产物）
+    name: 构建 / 校验 / 打包（签名模式由 Secrets 决定）
     needs: [validate, ffmpeg]
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      # Phase 2：固定无签名路径。Phase 3 改为读取 needs.validate.outputs.signing_mode 并导入证书。
-      SIGNING_MODE: unsigned
-      ALLOW_UNSIGNED: "1"
+      # 签名模式完全由 validate 判定，build 不做任何降级判断
+      SIGNING_MODE: ${{ needs.validate.outputs.signing_mode }}
+      ALLOW_UNSIGNED: ${{ needs.validate.outputs.signing_mode == 'unsigned' && '1' || '0' }}
       VERSION: ${{ needs.validate.outputs.version }}
     steps:
       - name: 校验 Runner 架构（arm64）
@@ -192,13 +218,31 @@ jobs:
       - name: 获取并校验 yt-dlp（固定版本 + SHA256）
         run: ./scripts/fetch-yt-dlp.sh
 
-      - name: 构建安装包（未签名）
+      - name: 导入 Developer ID 证书（临时 keychain）
+        if: needs.validate.outputs.signing_mode == 'developer-id'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: ./scripts/import-signing-certificate.sh
+
+      # 证书已在 keychain 内，后续只靠 GITHUB_ENV 里的 APPLE_SIGNING_IDENTITY 触签名；
+      # 不再向 bundler 传 APPLE_CERTIFICATE，避免 Tauri 重复导入证书。
+      - name: 构建安装包（签名模式：${{ needs.validate.outputs.signing_mode }}）
         run: pnpm tauri build --target aarch64-apple-darwin
+
+      # 私钥生命周期只覆盖构建步骤；后续校验只需公钥信息，不依赖 keychain
+      - name: 清理临时 keychain 与证书
+        if: always() && needs.validate.outputs.signing_mode == 'developer-id'
+        run: ./scripts/import-signing-certificate.sh --cleanup
 
       - name: 校验安装包（架构 / 引擎 / 许可证 / 签名状态）
         run: |
           set -euo pipefail
-          ./scripts/verify-release.sh
+          # developer-id 模式下由导入步骤回填期望值，这里强制断言签名身份与 Team ID
+          EXPECTED_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}" \
+          EXPECTED_TEAM_ID="${VIDEOFLOW_TEAM_ID:-}" \
+            ./scripts/verify-release.sh
           cat verification-report.txt >> "$GITHUB_STEP_SUMMARY"
 
       - name: 整理发布产物与校验和
@@ -215,10 +259,10 @@ jobs:
           REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION}" \
             ./scripts/package-release.sh
 
-      - name: 上传内部测试产物（未签名，禁止对外分发）
+      - name: 上传发布候选产物（不创建 Release）
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: videoflow-internal-unsigned-${{ needs.validate.outputs.version }}
+          name: videoflow-${{ needs.validate.outputs.signing_mode == 'developer-id' && 'signed-unnotarized' || 'internal-unsigned' }}-${{ needs.validate.outputs.version }}
           path: |
             dist-release
             verification-report.txt
@@ -228,14 +272,23 @@ jobs:
       - name: 汇总
         run: |
           {
-            echo "### 发布产物（内部测试，未签名）"
+            echo "### 发布产物（未创建 GitHub Release）"
             echo ""
             echo "| 项目 | 值 |"
             echo "| --- | --- |"
             echo "| 版本 | ${VERSION} |"
-            echo "| 签名 | unsigned（未签名，不可对外分发） |"
+            echo "| 签名模式 | ${SIGNING_MODE} |"
+            echo "| 签名身份 | ${APPLE_SIGNING_IDENTITY:-未签名} |"
+            echo "| Team ID | ${VIDEOFLOW_TEAM_ID:-—} |"
             echo "| 公证 | ${NOTARIZATION_STATUS} |"
             echo "| FFmpeg | LGPL 静态构建（已通过许可证校验） |"
             echo ""
-            echo "**未创建 GitHub Release**：Phase 2 只产出内部 Artifact；正式发布需要 Phase 3 的签名与 Phase 4 的发布 job。"
+            if [ "${SIGNING_MODE}" = "developer-id" ]; then
+              echo "签名已完成，但**未公证**：Gatekeeper 仍会拦截，用户需右键打开。"
+              echo "对外分发前必须完成 Apple Notarization（本轮按计划未执行）。"
+            else
+              echo "**未签名产物，仅供内部测试**，禁止对外分发。"
+            fi
+            echo ""
+            echo "**未创建 GitHub Release**：发布 job 属于 Phase 4。"
           } >> "$GITHUB_STEP_SUMMARY"

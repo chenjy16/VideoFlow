@@ -40,10 +40,20 @@ APP="${BUNDLE_DIR}/macos/${PRODUCT}.app"
 [ -n "$DMG" ] && [ -f "$DMG" ] || die "找不到 DMG: ${BUNDLE_DIR}/dmg/*.dmg"
 [ -d "$APP" ] || die "找不到 .app: ${APP}"
 
+# ---------------------------------------------------------------------------
+# 签名属性取自实际产物（codesign），不由 SIGNING_MODE 推断，避免清单与产物不符
+# ---------------------------------------------------------------------------
+app_sign="$(codesign -dv --verbose=2 "$APP" 2>&1 || true)"
+SIGN_IDENTITY="$(printf '%s\n' "$app_sign" | sed -n 's/^Authority=//p' | head -1)"
+[ -n "$SIGN_IDENTITY" ] || SIGN_IDENTITY="-"
+SIGN_TEAM="$(printf '%s\n' "$app_sign" | sed -n 's/^TeamIdentifier=//p' | head -1)"
+if printf '%s\n' "$app_sign" | grep -q 'flags=0x10000'; then HARDENED=true; else HARDENED=false; fi
+if codesign --verify --strict "$DMG" >/dev/null 2>&1; then DMG_SIGNED=true; else DMG_SIGNED=false; fi
+
 echo "==> 整理发布产物"
 echo "版本    : ${VERSION}"
 echo "目标    : ${TRIPLE}"
-echo "签名    : ${SIGNING_MODE}"
+echo "签名    : ${SIGNING_MODE}（身份: ${SIGN_IDENTITY}）"
 echo "公证    : ${NOTARIZATION_STATUS}"
 
 rm -rf "$OUT_DIR"
@@ -90,8 +100,11 @@ cat > "${OUT_DIR}/release-manifest.json" <<EOF
   "packaged_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "signing": {
     "mode": "${SIGNING_MODE}",
+    "identity": "${SIGN_IDENTITY}",
+    "team_id": "${SIGN_TEAM}",
     "description": "$([ "$SIGNING_MODE" = "developer-id" ] && echo "Signed with Developer ID, Not Notarized" || echo "Unsigned (internal testing only)")",
-    "hardened_runtime": true
+    "hardened_runtime": ${HARDENED},
+    "dmg_signed": ${DMG_SIGNED}
   },
   "notarization": {
     "status": "${NOTARIZATION_STATUS}",

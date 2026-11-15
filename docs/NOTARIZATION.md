@@ -153,3 +153,79 @@ xcrun stapler staple "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/V
 | Intel / universal | 覆盖 x86_64 用户 | 需重建 FFmpeg 并重新取证 |
 
 以上均为独立评估项，进入前需各自明确验收标准，不得以“去掉 entitlement”本身为目标破坏现有功能。
+
+---
+
+## 6. CI 签名接入（Phase 3）
+
+CI 的签名模式完全由 Secrets 推导，**不做隐式降级**。
+
+### 6.1 需要配置的三个 Secrets
+
+| Secret | 内容 | 说明 |
+| --- | --- | --- |
+| `APPLE_CERTIFICATE` | `.p12` 的 base64（单行） | `openssl base64 -A -in cert.p12 -out cert-base64.txt` |
+| `APPLE_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码 | |
+| `APPLE_SIGNING_IDENTITY` | 证书全名 | `security find-identity -v -p codesigning` 引号内的文字，例如 `Developer ID Application: jianyu chen (HQC33J8U5Y)` |
+
+导出要求：
+
+1. Keychain Access →「我的证书」→ 展开证书 → 右键私钥 → 导出，格式选 `.p12`；
+2. **不要**用 OpenSSL 3+ 直接 `openssl pkcs12 -export` 生成：其默认 AES-256/SHA-256 加密，macOS 的
+   `SecKeychainItemImport` 读不了（报 `MAC verification failed`）。必须用 Keychain Access 导出，
+   或显式加 `-legacy`。导入脚本会把这个错误识别成明确的提示，而不是让它变成难查的签名失败。
+
+### 6.2 行为矩阵（`release.yml`）
+
+| Secrets | 触发方式 | 结果 |
+| --- | --- | --- |
+| 0/3 | `workflow_dispatch` | `unsigned`，产物 `videoflow-internal-unsigned-<ver>`，仅供内部测试 |
+| 3/3 | 任意 | `developer-id`，产物 `videoflow-signed-unnotarized-<ver>` |
+| 1~2/3 | 任意 | **立即失败**（避免“以为签了其实没签”） |
+| 0/3 | `v*` tag | **立即失败**（正式 Release 不接受未签名产物） |
+
+因此没有 Secrets 的环境只能用 `workflow_dispatch` 做内部构建；`v*` tag 一旦推送就要求签名齐备。
+
+### 6.3 私钥在流水线中的生命周期
+
+1. `scripts/import-signing-certificate.sh` 新建临时 keychain，密码随机生成，只写到 `$RUNNER_TEMP`
+   下 0600 文件，**不进 `GITHUB_ENV`**（避免日志回显）；
+2. 导入 `.p12` → `set-key-partition-list`，让 `codesign` 无需人工确认即可使用私钥；
+3. 把 keychain 加入用户搜索列表（原有条目全部保留）；
+4. 回填 `APPLE_SIGNING_IDENTITY` / `VIDEOFLOW_TEAM_ID` 供后续断言；
+5. `pnpm tauri build` 期间只靠 `APPLE_SIGNING_IDENTITY` 触发签名，**不向 bundler 传 `APPLE_CERTIFICATE`**，
+   避免 Tauri 重复导入证书；
+6. 构建结束立即执行 `--cleanup` 删除 keychain、擦除密码文件、复原搜索列表（`if: always()`）。
+
+### 6.4 发布校验新增断言
+
+`scripts/verify-release.sh` 在 `SIGNING_MODE=developer-id` 下额外校验：
+
+| 断言 | 目的 |
+| --- | --- |
+| `codesign --verify --deep --strict`（.app） | 主程序与全部 sidecar 签名有效 |
+| `codesign --verify --strict`（.dmg）+ Authority | 用户双击的 DMG 本身已签名 |
+| `Authority=Developer ID Application` | 证书类型正确 |
+| `Authority=Developer ID Certification Authority` | 证书链来自 Apple，防自签名同名证书冒充 |
+| `Authority=<APPLE_SIGNING_IDENTITY>` 精确匹配 | 用的就是预期身份 |
+| `flags=0x10000` | Hardened Runtime 生效 |
+| `Timestamp=` | 有安全时间戳（公证的前置条件） |
+| `.app` / `.dmg` Team ID 一致，且等于证书的 Team | 签名归属一致 |
+| 主程序与 yt-dlp 均含 `disable-library-validation` | 防 onefile 运行失败（见第 2 节） |
+
+`spctl` 在未公证时必然是 `rejected source=Unnotarized Developer ID`，脚本**只记录**并说明这是预期，
+不判失败；完成公证后应变为 `accepted`。
+
+### 6.5 当前验证状态
+
+| 环节 | 状态 | 证据 |
+| --- | --- | --- |
+| 导入脚本负例（缺 Secrets / 密码错 / 非 p12 / macOS 不支持的 AES p12） | **PASS** | 本地逐项跑通，均给出明确报错 |
+| 导入脚本正例（创建 keychain、导入、私钥可用、搜索列表、清理） | **PASS** | 自签名证书本地测试；`codesign` 实测能用导入的私钥签出文件 |
+| 信任链有效性门禁（负例） | **PASS** | 自签名证书被判 `CSSMERR_TP_NOT_TRUSTED` 并拒绝 |
+| Team ID 提取与 `GITHUB_ENV` 回填 | **PASS** | 本地测试：`VIDEOFLOW_TEAM_ID` 正确 |
+| 签名模式判定矩阵（7 种 Secrets 组合） | **PASS** | 从 `release.yml` 抽出判定块穷举 |
+| `verify-release.sh` developer-id 分支 | **PASS（39 项）** | 用本地真实 Developer ID 签名的 DMG 实跑 |
+| `package-release.sh` 签名字段取自产物 | **PASS** | manifest 输出 identity / team_id / dmg_signed |
+| **CI 上使用真实 Developer ID 证书从零签名** | **NOT TESTED** | 需先配置三个 Secrets；本轮未配置，故未跑过 |
+

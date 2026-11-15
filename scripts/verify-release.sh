@@ -10,6 +10,8 @@
 #   SIGNING_MODE          unsigned | developer-id
 #   ALLOW_UNSIGNED        未签名时是否放行（内部测试 Artifact 用 1，正式发布必须为 0）
 #   REQUIRE_NOTARIZATION  默认 false；为 true 时必须 stapler validate 通过
+#   EXPECTED_SIGNING_IDENTITY  developer-id 模式下期望的签名身份全名（由 import-signing-certificate.sh 回填）
+#   EXPECTED_TEAM_ID           developer-id 模式下期望的 Team ID（同上）
 #   EXPECTED_VERSION      若设置则校验 CFBundleShortVersionString
 #   REPORT_PATH           校验报告输出路径
 set -uo pipefail
@@ -20,6 +22,8 @@ BUNDLE_DIR="${BUNDLE_DIR:-${REPO_ROOT}/src-tauri/target/${TRIPLE}/release/bundle
 SIGNING_MODE="${SIGNING_MODE:-unsigned}"
 ALLOW_UNSIGNED="${ALLOW_UNSIGNED:-0}"
 REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION:-false}"
+EXPECTED_SIGNING_IDENTITY="${EXPECTED_SIGNING_IDENTITY:-}"
+EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-}"
 EXPECTED_VERSION="${EXPECTED_VERSION:-}"
 REPORT_PATH="${REPORT_PATH:-${REPO_ROOT}/verification-report.txt}"
 
@@ -204,22 +208,87 @@ fi
 # 3. 签名
 # ---------------------------------------------------------------------------
 if [ "$SIGNING_MODE" = "developer-id" ]; then
+  # 3.1 .app 深度校验：主程序 + 全部嵌套二进制（sidecar）都必须签名有效
   if codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
-    pass "codesign --verify --deep --strict 通过"
+    pass "codesign --verify --deep --strict 通过（.app）"
   else
-    fail "签名校验失败"
+    fail ".app 签名校验失败（codesign --verify --deep --strict）"
   fi
-  sign_info="$(codesign -dv --verbose=2 "$APP" 2>&1 | tr '\n' ' ')"
-  info "签名信息: ${sign_info}"
-  if printf '%s' "$sign_info" | grep -q 'Developer ID Application'; then
+
+  # 3.2 签名主体、身份、Hardened Runtime、时间戳、Team ID
+  app_sign="$(codesign -dv --verbose=2 "$APP" 2>&1)"
+  info "签名信息(.app): $(printf '%s' "$app_sign" | tr '\n' ' ')"
+  if printf '%s\n' "$app_sign" | grep -q '^Authority=Developer ID Application'; then
     pass "签名为 Developer ID Application"
   else
     fail "未使用 Developer ID Application 签名"
   fi
-  if printf '%s' "$sign_info" | grep -q 'flags=0x10000'; then
+  if [ -n "$EXPECTED_SIGNING_IDENTITY" ]; then
+    if printf '%s\n' "$app_sign" | grep -qxF "Authority=${EXPECTED_SIGNING_IDENTITY}"; then
+      pass "签名身份与期望一致"
+    else
+      fail "签名身份与期望不一致，期望 '${EXPECTED_SIGNING_IDENTITY}'"
+    fi
+  else
+    info "未提供 EXPECTED_SIGNING_IDENTITY，仅校验证书类型"
+  fi
+  # 必须是 Apple 签发的 Developer ID 证书链：防自签名、同名证书冒充
+  if printf '%s\n' "$app_sign" | grep -qxF 'Authority=Developer ID Certification Authority'; then
+    pass "证书链来自 Apple Developer ID CA"
+  else
+    fail "证书链不是 Apple Developer ID CA（可能为自签名或链不完整）"
+  fi
+  if printf '%s\n' "$app_sign" | grep -q 'flags=0x10000'; then
     pass "启用 Hardened Runtime（flags=0x10000）"
   else
     fail "未检测到 Hardened Runtime 标记"
+  fi
+  # 公证与可信分发都要求安全时间戳；缺失通常说明构建机没联网或显式 --timestamp=none
+  if printf '%s\n' "$app_sign" | grep -q '^Timestamp='; then
+    pass "签名包含安全时间戳"
+  else
+    fail "签名缺少安全时间戳（Timestamp）"
+  fi
+  app_team="$(printf '%s\n' "$app_sign" | sed -n 's/^TeamIdentifier=//p' | head -1)"
+  if [ -n "$EXPECTED_TEAM_ID" ]; then
+    [ "$app_team" = "$EXPECTED_TEAM_ID" ] \
+      && pass ".app Team ID 为 ${app_team}" \
+      || fail ".app Team ID 为 '${app_team:-<空>}'，期望 ${EXPECTED_TEAM_ID}"
+  else
+    info ".app Team ID: ${app_team:-<空>}"
+  fi
+
+  # 3.3 DMG 自身也必须有签名：用户双击的是 DMG，未签名的 DMG 会被 Gatekeeper 直接拦下
+  if codesign --verify --strict "$DMG" >/dev/null 2>&1; then
+    pass "codesign --verify --strict 通过（.dmg）"
+  else
+    fail ".dmg 签名校验失败"
+  fi
+  dmg_sign="$(codesign -dv --verbose=2 "$DMG" 2>&1)"
+  if printf '%s\n' "$dmg_sign" | grep -q '^Authority=Developer ID Application'; then
+    pass ".dmg 由 Developer ID Application 签名"
+  else
+    fail ".dmg 未使用 Developer ID Application 签名"
+  fi
+  dmg_team="$(printf '%s\n' "$dmg_sign" | sed -n 's/^TeamIdentifier=//p' | head -1)"
+  if [ -n "$app_team" ] && [ -n "$dmg_team" ]; then
+    [ "$app_team" = "$dmg_team" ] \
+      && pass ".app 与 .dmg 的 Team ID 一致（${app_team}）" \
+      || fail "Team ID 不一致：.app=${app_team} .dmg=${dmg_team}"
+  fi
+
+  # 3.4 entitlement：yt-dlp 是 PyInstaller onefile，Hardened Runtime 下必须能加载
+  # 异 Team ID 的内嵌 framework，否则 sidecar 直接 exit=255（见 docs/NOTARIZATION.md）
+  ENT_KEY='com.apple.security.cs.disable-library-validation'
+  if codesign -d --entitlements :- "$APP" 2>/dev/null | grep -qF "$ENT_KEY"; then
+    pass "主程序 entitlement 含 disable-library-validation"
+  else
+    fail "主程序缺少 ${ENT_KEY}，yt-dlp onefile 在当前签名配置下无法运行"
+  fi
+  if codesign -d --entitlements :- "${APP}/Contents/MacOS/yt-dlp" 2>/dev/null | grep -qF "$ENT_KEY"; then
+    pass "sidecar yt-dlp entitlement 含 disable-library-validation"
+  else
+    fail "sidecar yt-dlp 缺少 ${ENT_KEY}，下载引擎会 exit=255"
   fi
 else
   if [ "$ALLOW_UNSIGNED" = "1" ]; then
@@ -230,9 +299,16 @@ else
   info "签名状态: NOT_SIGNED"
 fi
 
-# Gatekeeper 评估：未公证时必然 rejected，只记录不判失败
+# Gatekeeper 评估只记录，不判失败：
+#   * unsigned            → 必然 rejected
+#   * developer-id 未公证 → rejected source=Unnotarized Developer ID（本轮预期）
+# 完成 Apple Notarization 后这里应变为 accepted / source=Notarized Developer ID。
 spctl_out="$(spctl --assess --type execute --verbose=4 "$APP" 2>&1 | tr '\n' ' ')"
 info "spctl: ${spctl_out}"
+if [ "$SIGNING_MODE" = "developer-id" ] && [ "$REQUIRE_NOTARIZATION" != "true" ] \
+   && printf '%s' "$spctl_out" | grep -q 'Unnotarized Developer ID'; then
+  info "Gatekeeper 为未公证的预期状态；公证后应变更为 accepted"
+fi
 
 # ---------------------------------------------------------------------------
 # 4. 公证状态
