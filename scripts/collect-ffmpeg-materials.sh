@@ -31,8 +31,8 @@ OBJ_DIR="${BUILD_ROOT}/objects"
 FFMPEG_BIN="${BIN_DIR}/ffmpeg-${TRIPLE}"
 FFPROBE_BIN="${BIN_DIR}/ffprobe-${TRIPLE}"
 
-[ -d "$FFMPEG_SRC" ] || die "缺少 FFmpeg 构建目录: $FFMPEG_SRC（先跑 build-ffmpeg-lgpl.sh）"
-[ -d "$OBJ_DIR" ] || die "缺少目标文件目录: $OBJ_DIR（需 KEEP_OBJECTS=1 构建）"
+[ -d "$FFMPEG_SRC" ] || die "缺少 FFmpeg 构建目录: ${FFMPEG_SRC} （先跑 build-ffmpeg-lgpl.sh）"
+[ -d "$OBJ_DIR" ] || die "缺少目标文件目录: ${OBJ_DIR} （需 KEEP_OBJECTS=1 构建）"
 [ -x "$FFMPEG_BIN" ] || die "缺少产物: $FFMPEG_BIN"
 [ -x "$FFPROBE_BIN" ] || die "缺少产物: $FFPROBE_BIN"
 

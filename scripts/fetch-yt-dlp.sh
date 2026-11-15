@@ -36,7 +36,7 @@ curl -fL --retry 3 --connect-timeout 15 -o "$tmp" "$URL"
 
 actual="$(verify "$tmp")"
 if [[ "$actual" != "$SHA256" ]]; then
-  echo "校验失败：期望 $SHA256，实际 $actual" >&2
+  echo "校验失败：期望 ${SHA256}，实际 ${actual}" >&2
   exit 1
 fi
 

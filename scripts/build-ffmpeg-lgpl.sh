@@ -314,7 +314,9 @@ if [ "${KEEP_OBJECTS:-0}" = "1" ]; then
     "${BUILD_ROOT}/ffmpeg-src/" "${OBJ_DIR}/ffmpeg/"
   cp "${LAME_PREFIX}/lib/libmp3lame.a" "$OBJ_DIR"/ 2>/dev/null || true
   cp "${OPUS_PREFIX}/lib/libopus.a" "$OBJ_DIR"/ 2>/dev/null || true
-  echo "已保留目标文件到: $OBJ_DIR（$(find "$OBJ_DIR" -name '*.o' | wc -l | tr -d ' ') 个 .o）"
+  # 注意：变量名后面不能直接跟全角括号，bash 会把多字节字符算进变量名
+  echo "已保留目标文件到: ${OBJ_DIR}"
+  echo "  目标文件数量: $(find "$OBJ_DIR" -name '*.o' | wc -l | tr -d ' ') 个 .o"
 fi
 
 # ---------------------------------------------------------------------------
