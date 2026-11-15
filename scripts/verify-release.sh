@@ -11,6 +11,7 @@
 #   ALLOW_UNSIGNED        未签名时是否放行（内部测试 Artifact 用 1，正式发布必须为 0）
 #   REQUIRE_NOTARIZATION  默认 false；为 true 时必须 stapler validate 通过
 #   NOTARIZATION_STATUS   由 notarize.sh 从 Apple 返回的 JSON 写入；为 true 时必须为 ACCEPTED
+#   INTERNAL_BUILD        默认 false；为 true 时只能是 unsigned 内部测试包（报告首行会醒目标记）
 #   EXPECTED_SIGNING_IDENTITY  developer-id 模式下期望的签名身份全名（由 import-signing-certificate.sh 回填）
 #   EXPECTED_TEAM_ID           developer-id 模式下期望的 Team ID（同上）
 #   EXPECTED_VERSION      若设置则校验 CFBundleShortVersionString
@@ -23,6 +24,7 @@ BUNDLE_DIR="${BUNDLE_DIR:-${REPO_ROOT}/src-tauri/target/${TRIPLE}/release/bundle
 SIGNING_MODE="${SIGNING_MODE:-unsigned}"
 ALLOW_UNSIGNED="${ALLOW_UNSIGNED:-0}"
 REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION:-false}"
+INTERNAL_BUILD="${INTERNAL_BUILD:-false}"
 NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-}"
 EXPECTED_SIGNING_IDENTITY="${EXPECTED_SIGNING_IDENTITY:-}"
 EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-}"
@@ -58,7 +60,21 @@ echo "bundle  : ${BUNDLE_DIR}"
 echo "dmg     : ${DMG:-<未找到>}"
 echo "签名模式: ${SIGNING_MODE}"
 echo "公证要求: ${REQUIRE_NOTARIZATION}"
+if [ "$INTERNAL_BUILD" = "true" ]; then echo "构建类型: INTERNAL TEST BUILD - NOT NOTARIZED"; fi
 echo
+
+# 内部测试包必须是不签名 + 显式放行的，三条任意一条不满足就是配置错了
+if [ "$INTERNAL_BUILD" = "true" ]; then
+  if [ "$REQUIRE_NOTARIZATION" = "true" ]; then
+    fail "INTERNAL_BUILD=true 却要求公证，配置矛盾"
+  fi
+  if [ "$SIGNING_MODE" != "unsigned" ]; then
+    fail "INTERNAL_BUILD=true 但签名模式为 ${SIGNING_MODE}，内部测试包只能未签名（需在 validate 阶段强制 unsigned）"
+  fi
+  if [ "$ALLOW_UNSIGNED" != "1" ]; then
+    fail "INTERNAL_BUILD=true 但 ALLOW_UNSIGNED=${ALLOW_UNSIGNED}，未显式放行"
+  fi
+fi
 
 if [ -z "$DMG" ] || [ ! -f "$DMG" ]; then
   echo "结论: FAIL —— 找不到 DMG，无法继续"
@@ -353,6 +369,9 @@ fi
 # ---------------------------------------------------------------------------
 {
   echo "VideoFlow 发布校验报告"
+  if [ "$INTERNAL_BUILD" = "true" ]; then
+    echo "INTERNAL TEST BUILD - NOT NOTARIZED"
+  fi
   echo "时间    : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "目标    : ${TRIPLE}"
   echo "签名    : ${SIGNING_MODE}"

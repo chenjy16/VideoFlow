@@ -12,6 +12,7 @@
 #   NOTARIZATION_STATUS   BLOCKED / NOT_NOTARIZED / ACCEPTED / INVALID / REJECTED ...（取自 Apple 返回）
 #   NOTARIZATION_SUBMISSION_ID   notarytool 返回的 submission ID
 #   REQUIRE_NOTARIZATION  默认 false
+#   INTERNAL_BUILD        默认 false；为 true 时产出内部测试包（文件名/包内/清单三处标记 NOT NOTARIZED）
 #   BUNDLE_DIR            默认 src-tauri/target/<triple>/release/bundle
 #   OUT_DIR               默认 dist-release
 set -euo pipefail
@@ -24,6 +25,7 @@ SIGNING_MODE="${SIGNING_MODE:-unsigned}"
 NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-NOT_NOTARIZED}"
 NOTARIZATION_SUBMISSION_ID="${NOTARIZATION_SUBMISSION_ID:-}"
 REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION:-false}"
+INTERNAL_BUILD="${INTERNAL_BUILD:-false}"
 COMMIT_SHA="${COMMIT_SHA:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 TAG="${TAG:-}"
 
@@ -52,22 +54,70 @@ SIGN_TEAM="$(printf '%s\n' "$app_sign" | sed -n 's/^TeamIdentifier=//p' | head -
 if printf '%s\n' "$app_sign" | grep -q 'flags=0x10000'; then HARDENED=true; else HARDENED=false; fi
 if codesign --verify --strict "$DMG" >/dev/null 2>&1; then DMG_SIGNED=true; else DMG_SIGNED=false; fi
 
+if [ "$REQUIRE_NOTARIZATION" = "true" ] && [ "$INTERNAL_BUILD" = "true" ]; then
+  die "INTERNAL_BUILD 与 REQUIRE_NOTARIZATION=true 互斥：内部测试包不得被当作公证产物"
+fi
+
 echo "==> 整理发布产物"
 echo "版本    : ${VERSION}"
 echo "目标    : ${TRIPLE}"
 echo "签名    : ${SIGNING_MODE}（身份: ${SIGN_IDENTITY}）"
 echo "公证    : ${NOTARIZATION_STATUS}"
+echo "构建类型: $( [ "$INTERNAL_BUILD" = "true" ] && echo 'INTERNAL TEST BUILD - NOT NOTARIZED' || echo 'release' )"
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-DMG_NAME="${PRODUCT}_${VERSION}_${ARCH_LABEL}.dmg"
-APP_ZIP_NAME="${PRODUCT}_${VERSION}_${ARCH_LABEL}.app.zip"
+if [ "$INTERNAL_BUILD" = "true" ]; then
+  BUILD_TAG="INTERNAL-TEST-${COMMIT_SHA:0:7}-NOT-NOTARIZED"
+  DMG_NAME="${PRODUCT}_${VERSION}_${ARCH_LABEL}_${BUILD_TAG}.dmg"
+  APP_ZIP_NAME="${PRODUCT}_${VERSION}_${ARCH_LABEL}_${BUILD_TAG}.app.zip"
+else
+  DMG_NAME="${PRODUCT}_${VERSION}_${ARCH_LABEL}.dmg"
+  APP_ZIP_NAME="${PRODUCT}_${VERSION}_${ARCH_LABEL}.app.zip"
+fi
 
 cp "$DMG" "${OUT_DIR}/${DMG_NAME}"
 # 用 ditto 打包 .app：保留符号链接、扩展属性与签名信息（zip 命令会破坏签名）
 ditto -c -k --sequesterRsrc --keepParent "$APP" "${OUT_DIR}/${APP_ZIP_NAME}"
 echo "已归档: ${DMG_NAME} / ${APP_ZIP_NAME}"
+
+# 内部测试包：除了文件名，还把标记写进 DMG 内部与打包目录，避免被当成正式版
+dmg_inner_marker=false
+if [ "$INTERNAL_BUILD" = "true" ]; then
+  cat > "${OUT_DIR}/INTERNAL_TEST_BUILD.txt" <<EOF
+INTERNAL TEST BUILD - NOT NOTARIZED
+
+product : ${PRODUCT}
+version : ${VERSION}
+commit  : ${COMMIT_SHA}
+built   : $(date -u +%Y-%m-%dT%H:%M:%SZ)
+signing : ${SIGNING_MODE}
+notarize: ${NOTARIZATION_STATUS}
+
+本包仅用于内部安装与运行验证，不是正式发布产物，禁止对外分发。
+未经 Developer ID 签名与 Apple 公证，Gatekeeper 会拦截。
+EOF
+  # 往 DMG 内部写标记：转成读写镜像 → 拷入文件 → 压回 UDZO，每一步失败都不阻断，但如实记录
+  rw_base="${OUT_DIR}/.internal-rw"
+  final_base="${OUT_DIR}/.internal-final"
+  mnt="${OUT_DIR}/.internal-mnt"
+  if hdiutil convert "${OUT_DIR}/${DMG_NAME}" -format UDRW -ov -o "$rw_base" >/dev/null 2>&1 \
+     && mkdir -p "$mnt" \
+     && hdiutil attach "${rw_base}.dmg" -readwrite -nobrowse -mountpoint "$mnt" >/dev/null 2>&1; then
+    cp "${OUT_DIR}/INTERNAL_TEST_BUILD.txt" "${mnt}/INTERNAL_TEST_BUILD.txt" 2>/dev/null || true
+    sync
+    hdiutil detach "$mnt" -quiet >/dev/null 2>&1 || hdiutil detach "$mnt" -force -quiet >/dev/null 2>&1 || true
+    if hdiutil convert "${rw_base}.dmg" -format UDZO -ov -o "$final_base" >/dev/null 2>&1 && [ -f "${final_base}.dmg" ]; then
+      mv -f "${final_base}.dmg" "${OUT_DIR}/${DMG_NAME}"
+      if hdiutil verify "${OUT_DIR}/${DMG_NAME}" >/dev/null 2>&1; then
+        dmg_inner_marker=true
+      fi
+    fi
+  fi
+  rm -rf "${rw_base}.dmg" "${final_base}.dmg" "$mnt"
+  echo "DMG 内标记: ${dmg_inner_marker}"
+fi
 
 # 装订票据必须随复制后的制品一起存在（不能只看 bundle 里的原件）
 if xcrun stapler validate "${OUT_DIR}/${DMG_NAME}" >/dev/null 2>&1; then
@@ -104,13 +154,21 @@ zip_sha="$(sidecar_sha "${OUT_DIR}/${APP_ZIP_NAME}")"
 dmg_size="$(stat -f%z "${OUT_DIR}/${DMG_NAME}")"
 zip_size="$(stat -f%z "${OUT_DIR}/${APP_ZIP_NAME}")"
 
-if [ "$SIGNING_MODE" = "developer-id" ]; then
+if [ "$INTERNAL_BUILD" = "true" ]; then
+  BUILD_KIND="internal-test"
+  SIGN_DESC="INTERNAL TEST BUILD - NOT NOTARIZED"
+  DISTRIBUTION_NOTICE="INTERNAL TEST BUILD - NOT NOTARIZED"
+elif [ "$SIGNING_MODE" = "developer-id" ]; then
+  BUILD_KIND="release"
+  DISTRIBUTION_NOTICE=""
   if [ "$NOTARIZATION_STATUS" = "ACCEPTED" ] && [ "$TICKET_DMG" = "true" ]; then
     SIGN_DESC="Signed with Developer ID, Notarized and Stapled"
   else
     SIGN_DESC="Signed with Developer ID, Not Notarized"
   fi
 else
+  BUILD_KIND="release"
+  DISTRIBUTION_NOTICE=""
   SIGN_DESC="Unsigned (internal testing only)"
 fi
 
@@ -122,6 +180,9 @@ cat > "${OUT_DIR}/release-manifest.json" <<EOF
   "commit": "${COMMIT_SHA}",
   "target": "${TRIPLE}",
   "packaged_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "build_kind": "${BUILD_KIND}",
+  "distribution_notice": "${DISTRIBUTION_NOTICE}",
+  "dmg_inner_marker": ${dmg_inner_marker},
   "signing": {
     "mode": "${SIGNING_MODE}",
     "identity": "${SIGN_IDENTITY}",

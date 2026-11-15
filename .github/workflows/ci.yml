@@ -24,6 +24,21 @@ env:
   NPM_CONFIG_REGISTRY: https://registry.npmjs.org
 
 jobs:
+  release-gating:
+    name: 发布门禁静态测试
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # 只静态解析 release.yml 与公证/打包脚本，不需要构建、也不接触任何 Secrets。
+      # 守住两条底线：internal_build 绝不能创建 Release；tag 发布绝不能走 unsigned。
+      - name: 发布门禁回归测试
+        run: ./scripts/test-release-gating.sh
+
   frontend:
     name: 前端质量门禁
     runs-on: macos-15

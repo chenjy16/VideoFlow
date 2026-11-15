@@ -28,6 +28,10 @@ on:
         description: 只构建与校验，不创建 Release
         type: boolean
         default: true
+      internal_build:
+        description: 内部测试构建（无凭据也可产出未签名 Artifact，绝不创建 Release）
+        type: boolean
+        default: false
 
 # 最小权限：整个工作流只读，发布 job 单独申请 contents: write
 permissions:
@@ -40,8 +44,11 @@ concurrency:
 env:
   TRIPLE: aarch64-apple-darwin
   CARGO_TERM_COLOR: always
-  # Phase 4：发布必须公证。缺凭据时 notarize.sh 记为 BLOCKED 并失败，不会放行未公证产物。
-  REQUIRE_NOTARIZATION: "true"
+  # Phase 4：发布必须公证。
+  # 唯一例外：workflow_dispatch + internal_build=true 的内部测试构建——它只能产出 unsigned
+  # Artifact（不 staple、不发布），tag 触发时禁止使用（见 validate 的断言）。
+  REQUIRE_NOTARIZATION: ${{ github.event_name == 'workflow_dispatch' && inputs.internal_build && 'false' || 'true' }}
+  INTERNAL_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.internal_build && 'true' || 'false' }}
 
 jobs:
   validate:
@@ -50,6 +57,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
       signing_mode: ${{ steps.signing.outputs.mode }}
       notarization_ready: ${{ steps.notarize_creds.outputs.ready }}
     steps:
@@ -90,6 +98,7 @@ jobs:
             echo "git ref            : ${GITHUB_REF_NAME}（非 tag，手动触发）"
           fi
           echo "version=${pkg}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
       - name: 判定签名模式（严格：齐备或全空，不允许半配置）
         id: signing
@@ -100,6 +109,20 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
+
+          # 内部测试构建一律未签名：内部包要在 DMG 内写标记，签名包改写会破坏签名；
+          # 也避免产出"签了名但没公证"的灰色制品。
+          if [ "${INTERNAL_BUILD}" = "true" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              echo "::error::internal_build 只能用于手动触发的内部测试，不能用于 tag 发布"
+              exit 1
+            fi
+            echo "内部测试构建：强制 unsigned（忽略签名 Secrets）"
+            echo "mode=unsigned" >> "$GITHUB_OUTPUT"
+            echo "signing_ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           have=0
           if [ -n "${APPLE_CERTIFICATE}" ]; then have=$((have + 1)); fi
           if [ -n "${APPLE_CERTIFICATE_PASSWORD}" ]; then have=$((have + 1)); fi
@@ -138,6 +161,22 @@ jobs:
           APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
         run: |
           set -euo pipefail
+
+          # 内部测试构建：允许无凭据产出 unsigned Artifact，但绝不能用于正式发布
+          if [ "${INTERNAL_BUILD}" = "true" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              echo "::error::internal_build 只能用于手动触发的内部测试，不能用于 tag 发布"
+              exit 1
+            fi
+            if [ "${REQUIRE_NOTARIZATION}" != "false" ]; then
+              echo "::error::internal_build=true 时 REQUIRE_NOTARIZATION 必须降级为 false（当前 ${REQUIRE_NOTARIZATION}）"
+              exit 1
+            fi
+            echo "内部测试构建（internal_build=true）：不执行公证，产物名 internal-test-<version>-<sha>，release job 不会运行"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Phase 4 的发布语义是"必须公证"；关掉它会让产物名与实际状态不符
           if [ "${REQUIRE_NOTARIZATION}" != "true" ]; then
             echo "::error::REQUIRE_NOTARIZATION 必须为 true（Phase 4 起未公证产物不得发布）"
@@ -179,6 +218,7 @@ jobs:
             echo "| 签名 Secrets | $([ "${{ steps.signing.outputs.mode }}" = "developer-id" ] && echo "3/3 已配置" || echo "未配置") |"
             echo "| 本次签名模式 | ${{ steps.signing.outputs.mode }} |"
             echo "| 公证凭据（Team API Key） | $([ "${{ steps.notarize_creds.outputs.ready }}" = "true" ] && echo "3/3 已配置" || echo "未配置 → 预期 BLOCKED") |"
+            echo "| 内部测试构建 | ${INTERNAL_BUILD} |"
             echo "| REQUIRE_NOTARIZATION | ${REQUIRE_NOTARIZATION} |"
             echo "| GitHub Release | $([ "${GITHUB_REF_TYPE}" = "tag" ] && echo "全部检查通过后创建" || echo "不创建（非 tag）") |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -193,11 +233,15 @@ jobs:
     needs: [validate, ffmpeg]
     runs-on: macos-15
     timeout-minutes: 90
+    # 只读：构建 job 永远不持有写权限，发布只能由独立的 release job 完成
+    permissions:
+      contents: read
     env:
       # 签名与公证模式完全由 validate 判定，build 不做任何降级判断
       SIGNING_MODE: ${{ needs.validate.outputs.signing_mode }}
       ALLOW_UNSIGNED: ${{ needs.validate.outputs.signing_mode == 'unsigned' && '1' || '0' }}
       VERSION: ${{ needs.validate.outputs.version }}
+      SHORT_SHA: ${{ needs.validate.outputs.short_sha }}
     steps:
       - name: 校验 Runner 架构（arm64）
         run: |
@@ -283,6 +327,8 @@ jobs:
       # 公证：私钥解码到 $RUNNER_TEMP，提交后立刻删除；状态取自 Apple 返回的 JSON。
       # 凭据缺失 → BLOCKED 并失败（绝不跳过公证继续发布）。
       - name: Apple 公证（notarytool submit + staple + validate）
+        # 内部测试构建不是发布产物：不提交 Apple，也不允许出现"未公证却能发布"的产物
+        if: env.INTERNAL_BUILD != 'true'
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -321,16 +367,19 @@ jobs:
           COMMIT_SHA="${GITHUB_SHA}" \
           TRIPLE="${TRIPLE}" \
           SIGNING_MODE="${SIGNING_MODE}" \
-          NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-BLOCKED}" \
+          NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-$([ "${INTERNAL_BUILD}" = "true" ] && echo NOT_NOTARIZED || echo BLOCKED)}" \
           NOTARIZATION_SUBMISSION_ID="${NOTARIZATION_SUBMISSION_ID:-}" \
           REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION}" \
+          INTERNAL_BUILD="${INTERNAL_BUILD}" \
             ./scripts/package-release.sh
 
       - name: 上传发布候选产物
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          # 产物名即承诺：developer-id 分支只能在 Apple 返回 Accepted 后走到这里
-          name: videoflow-${{ needs.validate.outputs.signing_mode == 'developer-id' && 'signed-notarized' || 'internal-unsigned' }}-${{ needs.validate.outputs.version }}
+          # 产物名就是承诺：
+          #   internal_build=true → internal-test-<version>-<short sha>，永远不可能是正式版
+          #   developer-id 分支只能走到这里，而它会先通过公证门禁
+          name: ${{ inputs.internal_build == true && format('videoflow-internal-test-{0}-{1}', needs.validate.outputs.version, needs.validate.outputs.short_sha) || format('videoflow-{0}-{1}', needs.validate.outputs.signing_mode == 'developer-id' && 'signed-notarized' || 'internal-unsigned', needs.validate.outputs.version) }}
           path: |
             dist-release
             verification-report.txt
@@ -358,6 +407,8 @@ jobs:
             echo "| 项目 | 值 |"
             echo "| --- | --- |"
             echo "| 版本 | ${VERSION} |"
+            echo "| commit | ${SHORT_SHA} |"
+            echo "| 内部测试构建 | ${INTERNAL_BUILD} |"
             echo "| 签名模式 | ${SIGNING_MODE} |"
             echo "| 签名身份 | ${APPLE_SIGNING_IDENTITY:-未签名} |"
             echo "| Team ID | ${VIDEOFLOW_TEAM_ID:-—} |"
@@ -365,7 +416,11 @@ jobs:
             echo "| Submission ID | ${NOTARIZATION_SUBMISSION_ID:-—} |"
             echo "| FFmpeg | LGPL 静态构建（已通过许可证校验） |"
             echo ""
-            if [ "${NOTARIZATION_STATUS:-}" = "ACCEPTED" ]; then
+            if [ "${INTERNAL_BUILD}" = "true" ]; then
+              echo "**INTERNAL TEST BUILD - NOT NOTARIZED**"
+              echo ""
+              echo "仅供内部安装与运行验证，不是正式发布产物，禁止对外分发。"
+            elif [ "${NOTARIZATION_STATUS:-}" = "ACCEPTED" ]; then
               echo "已签名 + 已公证 + 已 staple，具备对外分发条件。"
             elif [ "${NOTARIZATION_STATUS:-}" = "BLOCKED" ]; then
               echo "**公证 BLOCKED**：缺少 App Store Connect Team API Key 凭据，产物不发布。"
@@ -380,7 +435,7 @@ jobs:
   release:
     name: 创建 GitHub Release
     needs: [validate, build]
-    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry_run == false)
+    if: github.ref_type == 'tag' && inputs.internal_build != true && (github.event_name == 'push' || inputs.dry_run == false)
     runs-on: macos-15
     timeout-minutes: 15
     permissions:

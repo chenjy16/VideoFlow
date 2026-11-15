@@ -257,6 +257,19 @@ CI 的签名模式完全由 Secrets 推导，**不做隐式降级**。
 | 任意 | 1~2/3 | 任意 | 立即失败（不允许半配置） |
 | 0/3 | 任意 | tag | 立即失败（未签名不得发布） |
 
+### 7.2.1 内部测试构建（`internal_build`，Phase 5）
+
+唯一能在无凭据时拿到安装包的入口，也是唯一能把 `REQUIRE_NOTARIZATION` 降为 `false` 的入口：
+
+| 条件 | 结果 |
+| --- | --- |
+| `workflow_dispatch` + `internal_build=true` | 强制 `unsigned` → `ALLOW_UNSIGNED=1` → 跳过公证 → 产物名 `videoflow-internal-test-<version>-<sha>` |
+| `internal_build=true` + tag 触发 | 不可能：该输入只定义在 `workflow_dispatch`，且 validate 会读 `GITHUB_REF_TYPE` 再拦一次 |
+| `internal_build=true` 且配了签名 Secrets | 仍强制 unsigned（签名包改写 DMG 会破坏签名，且会制造“签了名但没公证”的灰色制品） |
+| `internal_build=true` | release job 的 `if` 含 `inputs.internal_build != true`，永远不会创建 Release；build job 只有 `contents: read` |
+
+内部测试包的 `INTERNAL TEST BUILD - NOT NOTARIZED` 会同时出现在：文件名、DMG 卷内的 `INTERNAL_TEST_BUILD.txt`、`dist-release/INTERNAL_TEST_BUILD.txt`、`release-manifest.json` 的 `build_kind` / `distribution_notice`、`verification-report.txt` 首行、Step Summary。
+
 ### 7.3 流水线顺序（`release.yml` 的 build job）
 
 ```
