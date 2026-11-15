@@ -1,6 +1,6 @@
 [package]
 name = "videoflow"
-version = "1.0.0"
+version = "1.0.1"
 description = "VideoFlow - a macOS native video & audio downloader powered by yt-dlp"
 authors = ["VideoFlow"]
 edition = "2021"
