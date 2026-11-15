@@ -1,0 +1,147 @@
+name: CI
+
+# 只做质量门禁：不构建安装包、不签名、不公证、不接触任何 Secrets。
+# fork 的 PR 因此拿不到任何凭据（本文件不引用 secrets.*）。
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 最小权限：整个工作流只需要读代码
+permissions:
+  contents: read
+
+# 同一分支/PR 的旧运行自动取消，避免占用 Runner
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TARGET: aarch64-apple-darwin
+  CARGO_TERM_COLOR: always
+  # 仓库 .npmrc 指向国内镜像；CI 固定官方源，避免第三方镜像可用性影响构建
+  NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+
+jobs:
+  frontend:
+    name: 前端质量门禁
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: 校验 Runner 架构（arm64）
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          echo "uname -m: ${arch}"
+          if [ "${arch}" != "arm64" ]; then
+            echo "::error::本工作流只支持 Apple Silicon（arm64）Runner，实际为 ${arch}"
+            exit 1
+          fi
+
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm 版本由 package.json 的 packageManager 字段唯一决定（10.28.0）
+      - name: 准备 pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          run_install: false
+
+      - name: 准备 Node.js（读取 .nvmrc）
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: 安装依赖（锁定 lockfile）
+        run: pnpm install --frozen-lockfile
+
+      - name: 记录工具链版本
+        run: |
+          node -v
+          pnpm -v
+          node -p "'@tauri-apps/cli ' + require('./node_modules/@tauri-apps/cli/package.json').version"
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: ESLint
+        run: pnpm lint
+
+      - name: Prettier 格式检查
+        run: pnpm format:check
+
+      - name: 前端构建
+        run: pnpm build
+
+  rust:
+    name: Rust 质量门禁
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - name: 校验 Runner 架构（arm64）
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          echo "uname -m: ${arch}"
+          if [ "${arch}" != "arm64" ]; then
+            echo "::error::本工作流只支持 Apple Silicon（arm64）Runner，实际为 ${arch}"
+            exit 1
+          fi
+
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm 版本由 package.json 的 packageManager 字段唯一决定（10.28.0）
+      - name: 准备 pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          run_install: false
+
+      - name: 准备 Node.js（读取 .nvmrc）
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: 安装依赖（锁定 lockfile）
+        run: pnpm install --frozen-lockfile
+
+      # tauri-codegen 在编译期读取 frontendDist（../dist），缺失会直接 panic，
+      # 所以 cargo check/test 之前必须先产出前端构建产物。
+      - name: 构建前端（提供 tauri frontendDist）
+        run: pnpm build
+
+      - name: 安装并校验 Rust 工具链
+        run: |
+          set -euo pipefail
+          rustup show                        # 依据 rust-toolchain.toml 安装 1.100.0 与组件
+          rustc -vV | tee /tmp/rustc-vv.txt
+          grep -qx 'release: 1.100.0' /tmp/rustc-vv.txt \
+            || { echo "::error::Rust 版本不是 1.100.0"; exit 1; }
+          grep -qx "host: ${RUST_TARGET}" /tmp/rustc-vv.txt \
+            || { echo "::error::Rust host 不是 ${RUST_TARGET}"; exit 1; }
+
+      - name: Cargo 缓存
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri -> target
+
+      - name: 格式检查
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（告警即失败）
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: 单元测试
+        working-directory: src-tauri
+        run: cargo test
