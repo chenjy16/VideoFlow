@@ -359,7 +359,35 @@ jobs:
       # 不向 bundler 传任何 APPLE_API_* ，公证完全由下面的 notarize.sh 接管，
       # 这样 Apple 的返回才能被完整记录下来（而不是 bundler 内部静默处理）。
       - name: 构建安装包（签名模式：${{ needs.validate.outputs.signing_mode }}）
-        run: pnpm tauri build --target aarch64-apple-darwin
+        run: |
+          # Tauri 的 bundle_dmg.sh 用 hdiutil 挂载临时镜像，在 runner 上偶发
+          # “hdiutil: create failed - Resource busy”。这是环境噪声，不是构建错误：
+          # 清掉残留挂载点与半成品后重试一次（Rust 与前端产物已缓存，重试很快）。
+          cleanup_dmg() {
+            local base="src-tauri/target/aarch64-apple-darwin/release/bundle/dmg"
+            for vol in /Volumes/VideoFlow /Volumes/VideoFlow-* /Volumes/dmg.*; do
+              [ -e "$vol" ] || continue
+              hdiutil detach "$vol" -force -quiet >/dev/null 2>&1 || true
+              rmdir "$vol" 2>/dev/null || true
+            done
+            rm -rf "$base" 2>/dev/null || true
+          }
+
+          attempt=1
+          while :; do
+            cleanup_dmg
+            if pnpm tauri build --target aarch64-apple-darwin; then
+              echo "构建成功（第 ${attempt} 次）"
+              exit 0
+            fi
+            if [ "$attempt" -ge 2 ]; then
+              echo "::error::构建失败（已重试 1 次，仍失败）"
+              exit 1
+            fi
+            echo "::warning::首次构建失败，清理挂载点与 DMG 半成品后重试一次"
+            attempt=$((attempt + 1))
+            sleep 5
+          done
 
       # 私钥生命周期只覆盖构建步骤；后续校验只需公钥信息，不依赖 keychain
       - name: 清理临时 keychain 与证书
