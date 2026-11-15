@@ -360,6 +360,17 @@ jobs:
       # 这样 Apple 的返回才能被完整记录下来（而不是 bundler 内部静默处理）。
       - name: 构建安装包（签名模式：${{ needs.validate.outputs.signing_mode }}）
         run: |
+          # 没有 Developer ID 时也必须显式要求 ad-hoc 签名（APPLE_SIGNING_IDENTITY="-"）：
+          # tauri 拿不到任何身份时完全跳过 codesign，产出的 .app 只有链接器写进 Mach-O 的
+          # ad-hoc 签名（Info.plist 未绑定），codesign --verify --deep --strict 会报
+          # "code has no resources but signature indicates they must be present"。
+          # 用户从浏览器下载后带 quarantine 启动，macOS 直接报「“VideoFlow.app”已损坏」，
+          # 连 README 里的 xattr 去隔离说明都救不回来。
+          if [ "${SIGNING_MODE}" != "developer-id" ]; then
+            export APPLE_SIGNING_IDENTITY="-"
+            echo "无 Developer ID：改用 ad-hoc 签名（APPLE_SIGNING_IDENTITY=-）"
+          fi
+
           # Tauri 的 bundle_dmg.sh 用 hdiutil 挂载临时镜像，在 runner 上偶发
           # “hdiutil: create failed - Resource busy”。这是环境噪声，不是构建错误：
           # 清掉残留挂载点与半成品后重试一次（Rust 与前端产物已缓存，重试很快）。

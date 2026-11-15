@@ -701,6 +701,34 @@ else
   no "verify-release.sh 未拦截测试发行的伪造票据"
 fi
 
+# ---------------------------------------------------------------------------
+# 9. unsigned 不等于没有签名：必须做 ad-hoc 签名，否则下载后报「已损坏」
+# ---------------------------------------------------------------------------
+# 回归背景：v1.0.0 的 .app 在没有任何身份时被 tauri 跳过 codesign，只剩链接器
+# 写进 Mach-O 的 ad-hoc 签名（Info.plist 未绑定）。codesign --verify --deep --strict
+# 失败，用户从浏览器下载后带 quarantine 启动，macOS 直接报「App 已损坏」。
+if grep -qF 'export APPLE_SIGNING_IDENTITY="-"' "$WF"; then
+  ok "release.yml 在无 Developer ID 时显式要求 ad-hoc 签名（APPLE_SIGNING_IDENTITY=-）"
+else
+  no "release.yml 没有在 unsigned 路径要求 ad-hoc 签名，产物会只有链接器签名"
+fi
+if grep -qF 'if [ "${SIGNING_MODE}" != "developer-id" ]; then' "$WF"; then
+  ok "ad-hoc 签名只在非 developer-id 模式生效（不污染真实签名路径）"
+else
+  no "ad-hoc 签名缺少 SIGNING_MODE 守卫，可能覆盖 Developer ID 签名"
+fi
+if awk '/AD_HOC（无 Developer ID）/,/测试发行的“unsigned”声明/' "$VERIFY" | grep -q 'codesign --verify --deep --strict'; then
+  ok "verify-release.sh 在 unsigned 分支断言 .app 自身签名完整（codesign --verify --deep --strict）"
+else
+  no "verify-release.sh 的 unsigned 分支只放行不校验，损坏的 .app 会直接发布"
+fi
+if grep -qF "grep -q '^Signature=adhoc'" "$VERIFY" \
+   && grep -qF "grep -q '^Info.plist entries='" "$VERIFY"; then
+  ok "verify-release.sh 断言 ad-hoc 签名已绑定 Info.plist（不只是链接器签名）"
+else
+  no "verify-release.sh 未区分「真 ad-hoc 签名」与「链接器签名」"
+fi
+
 echo
 echo "小计: PASS=${PASS} FAIL=${FAIL}"
 [ "$FAIL" -eq 0 ] || exit 1

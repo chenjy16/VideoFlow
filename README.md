@@ -91,13 +91,21 @@ Built with Tauri 2 (Rust backend, React 19 + TypeScript frontend), SQLite storag
 Download the DMG from [Releases](https://github.com/chenjy16/VideoFlow/releases), mount it,
 and drag `VideoFlow.app` into `/Applications`.
 
-Released builds are **unsigned and not notarized** by Apple. Gatekeeper will refuse the first
-launch; either open it from System Settings → Privacy & Security → *Open Anyway*, or strip the
-quarantine flag:
+Released builds are **signed ad-hoc and not notarized** by Apple. Gatekeeper will refuse the
+first launch; either open it from System Settings → Privacy & Security → *Open Anyway*, or strip
+the quarantine flag:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/VideoFlow.app
 ```
+
+There is no Developer ID certificate behind it, so macOS reports it as an unidentified developer.
+If you instead see *“VideoFlow.app” is damaged and can't be opened* — that message means the code
+signature itself is invalid, not that the download was corrupted. Builds from **v1.0.0 and
+earlier** were packaged without any `codesign` pass (only the linker signature on the Mach-O), so
+that dialog appears for them; v1.0.1 and later are ad-hoc signed as a whole bundle and show the
+regular unidentified-developer prompt. Either way the fix is the same `xattr` command above,
+followed by a normal launch.
 
 Verify the download before installing:
 

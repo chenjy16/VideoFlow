@@ -338,7 +338,28 @@ else
   else
     fail "产物未签名且未允许未签名发布（ALLOW_UNSIGNED=${ALLOW_UNSIGNED}）"
   fi
-  info "签名状态: NOT_SIGNED"
+  info "签名状态: AD_HOC（无 Developer ID）"
+
+  # unsigned 不等于没有签名：.app 自身必须是完整的 ad-hoc 签名（主程序 + 全部 sidecar
+  # + Info.plist 绑定）。只有链接器签名时 codesign --verify 失败，用户从浏览器下载后
+  # 带 quarantine 启动会直接弹「“VideoFlow.app”已损坏」，xattr 去隔离也修不回来。
+  if codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+    pass "codesign --verify --deep --strict 通过（ad-hoc .app）"
+  else
+    fail ".app 签名不完整（codesign --verify --deep --strict 失败）——下载后会被 macOS 报「已损坏」"
+  fi
+  app_sign="$(codesign -dv --verbose=2 "$APP" 2>&1 || true)"
+  info "签名信息(.app): $(printf '%s' "$app_sign" | tr '\n' ' ')"
+  if printf '%s\n' "$app_sign" | grep -q '^Signature=adhoc'; then
+    pass ".app 已完成 ad-hoc 签名（Signature=adhoc）"
+  else
+    fail ".app 缺少 ad-hoc 签名（可能根本没做过 codesign）"
+  fi
+  if printf '%s\n' "$app_sign" | grep -q '^Info.plist entries='; then
+    pass "ad-hoc 签名已绑定 Info.plist 与资源清单"
+  else
+    fail "签名未绑定 Info.plist（只有链接器签名，bundle 未真正 codesign）"
+  fi
 
   # 测试发行的“unsigned”声明必须与产物一致：只要出现 Developer ID 签发就不能叫 unsigned
   if [ "$TEST_RELEASE" = "true" ]; then

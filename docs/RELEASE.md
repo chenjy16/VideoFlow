@@ -48,7 +48,8 @@ gh run watch
    并**跳过**签名 / 公证凭据检查。
 2. **ffmpeg**：复用 `ffmpeg-lgpl.yml` 构建 LGPL 版 ffmpeg/ffprobe，产出许可证与再链接材料。
 3. **build**（只读权限）：安装依赖 → 校验 Rust 版本 → 取回 LGPL 产物 → 获取并校验 yt-dlp
-   → `pnpm tauri build`（不签名）→ **跳过公证步骤** → `verify-release.sh` → `package-release.sh`
+   → `pnpm tauri build`（不签名，但导出 `APPLE_SIGNING_IDENTITY="-"` 做 **ad-hoc 签名**）
+   → **跳过公证步骤** → `verify-release.sh` → `package-release.sh`
    → 上传 Artifact `videoflow-test-release-<ver>-<sha>`。
 4. **release**（唯一持有 `contents: write`）：下载候选产物 → `shasum -c SHA256SUMS`
    → 复核 manifest → 断言**没有**公证票据 → 拒绝覆盖已有 Release → `gh release create --prerelease`。
@@ -92,6 +93,14 @@ gh run watch
 4. `shasum -a 256 -c SHA256SUMS` 确认下载完整。
 
 **不得宣称**该包已通过 Apple 公证或 Gatekeeper 完整验收。
+
+> **「已损坏」不是本次下载坏了。** macOS 报 *“VideoFlow.app” 已损坏，无法打开* 时，它的含义是
+> **代码签名不成立**（`codesign --verify` 失败），最常见的原因是打包时根本没有跑过 `codesign`，
+> `.app` 只剩下链接器写进 Mach-O 的 ad-hoc 签名、`Info.plist` 未绑定。
+> v1.0.0 及更早的产物就是这样，v1.0.1 起在 `release.yml` 里导出 `APPLE_SIGNING_IDENTITY="-"`，
+> 由 tauri 对 sidecar 与 `.app` 逐个做 ad-hoc 签名（`flags=0x10002(adhoc,runtime)`、
+> `Info.plist entries=N`），`verify-release.sh` 也会在 unsigned 分支硬断言这一点。
+> 用户侧的处理不变：`xattr -dr com.apple.quarantine` 后正常打开。
 
 ### 1.7 校验和时序
 
