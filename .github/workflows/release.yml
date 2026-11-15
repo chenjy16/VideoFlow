@@ -1,0 +1,241 @@
+name: Release
+
+# 发布流水线（Phase 2：未签名内部产物）
+#
+# 本阶段刻意不做的事：
+#   * 不接入 Developer ID 签名 Secrets（Phase 3）
+#   * 不创建 GitHub Release（Phase 4）
+#   * 不执行 Apple Notarization（本轮要求，保留 REQUIRE_NOTARIZATION 开关）
+#
+# 因此产物一律视为"内部测试 Artifact"：未签名、未公证，不能对外分发。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只构建与校验，不发布（Phase 2 恒为 true 语义）
+        type: boolean
+        default: true
+
+# 最小权限：整个工作流只读。Phase 4 的发布 job 才会单独申请 contents: write。
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TRIPLE: aarch64-apple-darwin
+  CARGO_TERM_COLOR: always
+  # 本轮不实施 Apple Notarization：状态固定为 NOT_NOTARIZED，且不作为阻断条件。
+  # 未来启用时把 REQUIRE_NOTARIZATION 改为 true 并配置 Apple ID 凭据即可。
+  REQUIRE_NOTARIZATION: "false"
+  NOTARIZATION_STATUS: NOT_NOTARIZED
+
+jobs:
+  validate:
+    name: 校验版本与发布条件
+    runs-on: macos-15
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      signing_mode: ${{ steps.signing.outputs.mode }}
+    steps:
+      - name: 校验 Runner 架构（arm64）
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          echo "uname -m: ${arch}"
+          [ "${arch}" = "arm64" ] || { echo "::error::发布构建只支持 arm64 Runner，实际为 ${arch}"; exit 1; }
+
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 校验三处版本号一致（tag 触发时还要与 tag 一致）
+        id: version
+        run: |
+          set -euo pipefail
+          pkg=$(node -p "require('./package.json').version")
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
+          echo "package.json       : ${pkg}"
+          echo "tauri.conf.json    : ${conf}"
+          echo "src-tauri/Cargo.toml: ${cargo}"
+          if [ "$pkg" != "$conf" ] || [ "$pkg" != "$cargo" ]; then
+            echo "::error::三处版本号不一致，发布中止"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            echo "git tag            : ${GITHUB_REF_NAME}（解析为 ${tag_version}）"
+            if [ "$tag_version" != "$pkg" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} 与版本号 ${pkg} 不一致，发布中止"
+              exit 1
+            fi
+          else
+            echo "git ref            : ${GITHUB_REF_NAME}（非 tag，手动触发）"
+          fi
+          echo "version=${pkg}" >> "$GITHUB_OUTPUT"
+
+      - name: 判定签名模式
+        id: signing
+        env:
+          # 只读判断是否配置了 Secrets，不输出任何凭据内容
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -n "${APPLE_CERTIFICATE}" ] && [ -n "${APPLE_SIGNING_IDENTITY}" ]; then
+            echo "mode=developer-id" >> "$GITHUB_OUTPUT"
+            echo "检测到 Developer ID Secrets"
+          else
+            echo "mode=unsigned" >> "$GITHUB_OUTPUT"
+            echo "未配置 Developer ID Secrets"
+          fi
+
+      - name: 发布条件汇总
+        run: |
+          {
+            echo "### 发布条件"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 版本 | ${{ steps.version.outputs.version }} |"
+            echo "| 目标 | aarch64-apple-darwin |"
+            echo "| 签名 Secrets | $([ "${{ steps.signing.outputs.mode }}" = "developer-id" ] && echo 已配置 || echo 未配置) |"
+            echo "| 本轮签名模式 | unsigned（Phase 2 固定，Phase 3 接入） |"
+            echo "| 公证状态 | ${NOTARIZATION_STATUS} |"
+            echo "| REQUIRE_NOTARIZATION | ${REQUIRE_NOTARIZATION} |"
+            echo "| GitHub Release | 不创建（Phase 4 接入） |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ffmpeg:
+    name: 构建 FFmpeg LGPL
+    needs: validate
+    uses: ./.github/workflows/ffmpeg-lgpl.yml
+
+  build:
+    name: 构建 / 校验 / 打包（未签名内部产物）
+    needs: [validate, ffmpeg]
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      # Phase 2：固定无签名路径。Phase 3 改为读取 needs.validate.outputs.signing_mode 并导入证书。
+      SIGNING_MODE: unsigned
+      ALLOW_UNSIGNED: "1"
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: 校验 Runner 架构（arm64）
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          echo "uname -m: ${arch}"
+          [ "${arch}" = "arm64" ] || { echo "::error::发布构建只支持 arm64 Runner"; exit 1; }
+
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 准备 pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          run_install: false
+
+      - name: 准备 Node.js（读取 .nvmrc）
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: 安装依赖（锁定 lockfile）
+        run: pnpm install --frozen-lockfile
+
+      - name: 安装并校验 Rust 工具链
+        run: |
+          set -euo pipefail
+          rustup show
+          rustc -vV | tee /tmp/rustc-vv.txt
+          grep -qx 'release: 1.100.0' /tmp/rustc-vv.txt || { echo "::error::Rust 版本不是 1.100.0"; exit 1; }
+          grep -qx 'host: aarch64-apple-darwin' /tmp/rustc-vv.txt || { echo "::error::Rust host 不是 aarch64-apple-darwin"; exit 1; }
+
+      - name: Cargo 缓存
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri -> target
+
+      # 必须是全程经过校验的 LGPL 构建产物，绝不回退 Homebrew 或 GPL 构建
+      - name: 取回 FFmpeg LGPL 产物
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ffmpeg-lgpl-binaries
+          path: src-tauri/binaries
+
+      - name: 取回 FFmpeg 许可证与再链接材料
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ffmpeg-lgpl-materials
+          path: .build/ffmpeg-lgpl-materials
+
+      - name: 复核 FFmpeg LGPL 产物（含许可证材料）
+        run: |
+          set -euo pipefail
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          MATERIALS_DIR="${GITHUB_WORKSPACE}/.build/ffmpeg-lgpl-materials" ./scripts/verify-ffmpeg-lgpl.sh
+
+      - name: 获取并校验 yt-dlp（固定版本 + SHA256）
+        run: ./scripts/fetch-yt-dlp.sh
+
+      - name: 构建安装包（未签名）
+        run: pnpm tauri build --target aarch64-apple-darwin
+
+      - name: 校验安装包（架构 / 引擎 / 许可证 / 签名状态）
+        run: |
+          set -euo pipefail
+          ./scripts/verify-release.sh
+          cat verification-report.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 整理发布产物与校验和
+        run: |
+          set -euo pipefail
+          TAG_NAME="${{ github.ref_type == 'tag' && github.ref_name || '' }}"
+          OUT_DIR="${GITHUB_WORKSPACE}/dist-release" \
+          VERSION="${VERSION}" \
+          TAG="${TAG_NAME}" \
+          COMMIT_SHA="${GITHUB_SHA}" \
+          TRIPLE="${TRIPLE}" \
+          SIGNING_MODE="${SIGNING_MODE}" \
+          NOTARIZATION_STATUS="${NOTARIZATION_STATUS}" \
+          REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION}" \
+            ./scripts/package-release.sh
+
+      - name: 上传内部测试产物（未签名，禁止对外分发）
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: videoflow-internal-unsigned-${{ needs.validate.outputs.version }}
+          path: |
+            dist-release
+            verification-report.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 汇总
+        run: |
+          {
+            echo "### 发布产物（内部测试，未签名）"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 版本 | ${VERSION} |"
+            echo "| 签名 | unsigned（未签名，不可对外分发） |"
+            echo "| 公证 | ${NOTARIZATION_STATUS} |"
+            echo "| FFmpeg | LGPL 静态构建（已通过许可证校验） |"
+            echo ""
+            echo "**未创建 GitHub Release**：Phase 2 只产出内部 Artifact；正式发布需要 Phase 3 的签名与 Phase 4 的发布 job。"
+          } >> "$GITHUB_STEP_SUMMARY"

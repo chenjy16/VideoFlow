@@ -4,6 +4,8 @@ node_modules/
 
 # 构建产物
 dist/
+dist-release/
+verification-report.txt
 src-tauri/target/
 src-tauri/gen/
 

@@ -1,0 +1,161 @@
+name: FFmpeg LGPL 构建
+
+# 独立构建随应用分发的静态 LGPL FFmpeg / FFprobe。
+# 缓存键 = 构建脚本哈希 + 三个固定版本 + 目标架构；命中缓存后仍然执行完整校验，
+# 校验不通过一律失败，避免"缓存里的旧产物"绕过许可证检查。
+#
+# 供 release.yml 以 workflow_call 复用，也可手动触发验证构建可复现性。
+
+on:
+  workflow_call:
+    inputs:
+      force_rebuild:
+        description: 忽略缓存重新构建（不会覆盖已有缓存条目，只会验证可复现性）
+        type: boolean
+        default: false
+    outputs:
+      cache_hit:
+        description: 是否命中内容哈希缓存
+        value: ${{ jobs.build.outputs.cache_hit }}
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 忽略缓存重新构建（不会覆盖已有缓存条目，只会验证可复现性）
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  TRIPLE: aarch64-apple-darwin
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 构建并校验 FFmpeg（静态 LGPL）
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      cache_hit: ${{ steps.cache.outputs.cache-hit }}
+      ffmpeg_sha256: ${{ steps.fingerprint.outputs.ffmpeg }}
+      ffprobe_sha256: ${{ steps.fingerprint.outputs.ffprobe }}
+    steps:
+      - name: 校验 Runner 架构（arm64）
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          echo "uname -m: ${arch}"
+          if [ "${arch}" != "arm64" ]; then
+            echo "::error::FFmpeg 构建只支持 Apple Silicon（arm64）Runner，实际为 ${arch}"
+            exit 1
+          fi
+
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 计算内容哈希缓存键
+        id: key
+        run: |
+          set -euo pipefail
+          ffmpeg_v=$(sed -n 's/^FFMPEG_VERSION="\${FFMPEG_VERSION:-\(.*\)}"$/\1/p' scripts/build-ffmpeg-lgpl.sh)
+          lame_v=$(sed -n 's/^LAME_VERSION="\${LAME_VERSION:-\(.*\)}"$/\1/p' scripts/build-ffmpeg-lgpl.sh)
+          opus_v=$(sed -n 's/^OPUS_VERSION="\${OPUS_VERSION:-\(.*\)}"$/\1/p' scripts/build-ffmpeg-lgpl.sh)
+          scripts_sha=$(cat scripts/build-ffmpeg-lgpl.sh scripts/collect-ffmpeg-materials.sh scripts/verify-ffmpeg-lgpl.sh \
+            | shasum -a 256 | cut -c1-16)
+          key="ffmpeg-lgpl-v1-ff${ffmpeg_v}-lame${lame_v}-opus${opus_v}-${TRIPLE}-${scripts_sha}"
+          echo "ffmpeg=${ffmpeg_v} lame=${lame_v} opus=${opus_v}"
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### FFmpeg 缓存键"
+            echo '```'
+            echo "FFmpeg    : ${ffmpeg_v}"
+            echo "LAME      : ${lame_v}"
+            echo "libopus   : ${opus_v}"
+            echo "脚本哈希  : ${scripts_sha}"
+            echo "缓存键    : ${key}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 还原缓存（二进制 + 许可证材料）
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+            src-tauri/binaries/ffprobe-aarch64-apple-darwin
+            .build/ffmpeg-lgpl-materials
+
+      - name: 准备构建依赖
+        if: steps.cache.outputs.cache-hit != 'true' || inputs.force_rebuild
+        run: |
+          set -euo pipefail
+          # macOS Runner 自带 pkgconf（提供 pkg-config），缺失时兜底安装
+          command -v pkg-config >/dev/null 2>&1 || brew install pkgconf
+          for t in clang make rsync curl tar shasum lipo otool xcrun; do
+            command -v "$t" >/dev/null 2>&1 || { echo "::error::缺少构建工具 $t"; exit 1; }
+          done
+          echo "pkg-config: $(pkg-config --version)"
+          echo "clang: $(clang --version | head -1)"
+
+      - name: 构建 FFmpeg（保留目标文件）
+        if: steps.cache.outputs.cache-hit != 'true' || inputs.force_rebuild
+        env:
+          KEEP_OBJECTS: "1"
+        run: ./scripts/build-ffmpeg-lgpl.sh
+
+      - name: 收集许可证与再链接材料
+        if: steps.cache.outputs.cache-hit != 'true' || inputs.force_rebuild
+        run: ./scripts/collect-ffmpeg-materials.sh
+
+      # 缓存命中也要跑：这是"缓存不能绕过许可证检查"的核心保证
+      - name: 完整校验（缓存命中同样执行）
+        run: |
+          set -euo pipefail
+          MATERIALS_DIR="${GITHUB_WORKSPACE}/.build/ffmpeg-lgpl-materials" ./scripts/verify-ffmpeg-lgpl.sh
+
+      - name: 记录产物指纹
+        id: fingerprint
+        run: |
+          set -euo pipefail
+          ff=$(shasum -a 256 "src-tauri/binaries/ffmpeg-${TRIPLE}" | cut -d' ' -f1)
+          fp=$(shasum -a 256 "src-tauri/binaries/ffprobe-${TRIPLE}" | cut -d' ' -f1)
+          echo "ffmpeg=${ff}" >> "$GITHUB_OUTPUT"
+          echo "ffprobe=${fp}" >> "$GITHUB_OUTPUT"
+          echo "ffmpeg  sha256: ${ff}"
+          echo "ffprobe sha256: ${fp}"
+
+      - name: 上传二进制产物
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-lgpl-binaries
+          path: |
+            src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+            src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 上传许可证与再链接材料
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-lgpl-materials
+          path: .build/ffmpeg-lgpl-materials
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 汇总
+        run: |
+          {
+            echo "### FFmpeg LGPL 构建结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 缓存 | $([ "${{ steps.cache.outputs.cache-hit }}" = "true" ] && echo 命中 || echo 未命中，已重新构建) |"
+            echo "| 架构 | arm64（$(lipo -archs src-tauri/binaries/ffmpeg-${TRIPLE})) |"
+            echo "| ffmpeg sha256 | \`${{ steps.fingerprint.outputs.ffmpeg }}\` |"
+            echo "| ffprobe sha256 | \`${{ steps.fingerprint.outputs.ffprobe }}\` |"
+            echo "| 许可证校验 | PASS（verify-ffmpeg-lgpl.sh） |"
+          } >> "$GITHUB_STEP_SUMMARY"
