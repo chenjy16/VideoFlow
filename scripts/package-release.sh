@@ -149,6 +149,8 @@ EOF
     dmg_inner_marker=true
   fi
   echo "DMG 内标记: ${dmg_inner_marker}"
+  # 标记已经写进 DMG；留在发布目录里会让 SHA256SUMS 指向一个用户下载不到的文件
+  if [ "${dmg_inner_marker}" = "true" ]; then rm -f "${OUT_DIR}/INTERNAL_TEST_BUILD.txt"; fi
 fi
 
 # tag 测试发行：DMG 内必须有 TEST_RELEASE.txt，写不进去就不允许发布
@@ -174,6 +176,9 @@ EOF
     die "无法把 TEST_RELEASE.txt 写进 DMG，测试发行中止（不能发布没有标识的包）"
   fi
   echo "DMG 内标记: ${dmg_inner_marker}"
+  # 标记已经写进 DMG；留在发布目录里会让 SHA256SUMS 包含一个用户下载不到的文件，
+  # 那样用户跑 shasum -c 会报 “TEST_RELEASE.txt: No such file or directory”。
+  rm -f "${OUT_DIR}/TEST_RELEASE.txt"
 fi
 
 # 装订票据必须随复制后的制品一起存在（不能只看 bundle 里的原件）

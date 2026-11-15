@@ -58,11 +58,13 @@ gh run watch
 | --- | --- |
 | `VideoFlow_<ver>_aarch64_TEST-UNSIGNED.dmg` | 用户下载的安装镜像，卷内含 `TEST_RELEASE.txt` |
 | `VideoFlow_<ver>_aarch64_TEST-UNSIGNED.app.zip` | `.app` 压缩包（ditto 打包，保留符号链接） |
-| `SHA256SUMS` | 覆盖上面两个文件的 SHA256 |
+| `SHA256SUMS` | 覆盖上面两个文件与下面三个材料文件 |
 | `release-manifest.json` | 构建类型、签名、公证状态、引擎版本、许可证索引 |
-| `THIRD_PARTY_LICENSES.md` | 第三方许可证汇总 |
+| `THIRD_PARTY_LICENSES.md` | 第三方许可证汇总（对应需求里的 THIRD_PARTY_NOTICES） |
 | `SOURCE_OFFER.txt` | FFmpeg LGPL 源码与再链接要约 |
-| `verification-report.txt` | `verify-release.sh` 的逐项结论 |
+
+共 **6 个** Release 资产。`verification-report.txt` 不进 Release，只随 Actions Artifact 保留；
+`TEST_RELEASE.txt` 只存在于 DMG 卷内（写入后从发布目录删除，避免 SHA256SUMS 指向用户拿不到的文件）。
 
 ### 1.5 发布状态一致性（四处必须一致）
 
@@ -150,7 +152,7 @@ gh workflow run release.yml -f dry_run=true -f internal_build=true
 
 - [ ] Actions 全绿，`release` job 显示 Pre-release 已创建
 - [ ] Release 标题为 `VideoFlow vX.Y.Z - Test Release` 且带 Pre-release 徽标
-- [ ] 7 个资产齐全（见 1.4）
+- [ ] 6 个资产齐全（见 1.4）
 - [ ] `shasum -a 256 -c SHA256SUMS` 全 OK
 - [ ] `hdiutil attach` 能挂载，卷内有 `VideoFlow.app` 和 `TEST_RELEASE.txt`
 - [ ] 拷贝到 `/Applications` 后能启动，引擎（yt-dlp / ffmpeg / ffprobe）就绪

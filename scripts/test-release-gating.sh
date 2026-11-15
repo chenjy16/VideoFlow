@@ -562,6 +562,14 @@ else
   no "TEST_RELEASE.txt 缺少醒目的发布状态标记"
 fi
 
+# SHA256SUMS 只能包含真正随包分发的文件：标记文件写进 DMG 后必须从发布目录删除，
+# 否则用户 shasum -c 会报 “TEST_RELEASE.txt: No such file or directory”。
+if [ -n "$embed_line" ] && sed -n "$((embed_line + 1)),$((embed_line + 10))p" "$PKG" | grep -q 'rm -f "${OUT_DIR}/TEST_RELEASE.txt"'; then
+  ok "TEST_RELEASE.txt 写入 DMG 后从发布目录删除，SHA256SUMS 不会指向缺失文件"
+else
+  no "TEST_RELEASE.txt 写完后仍留在发布目录，SHA256SUMS 会包含用户拿不到的文件"
+fi
+
 # 场景 5：manifest 必须如实记录 test-release / unsigned / null 身份 / NOT_NOTARIZED
 if grep -q 'BUILD_KIND="test-release"' "$PKG" \
    && grep -q 'DISTRIBUTION_NOTICE="TEST RELEASE - UNSIGNED - NOT NOTARIZED"' "$PKG"; then
