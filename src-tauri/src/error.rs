@@ -15,6 +15,13 @@ pub enum AppError {
     #[error("未找到 yt-dlp 可执行文件，请安装后重试")]
     YtDlpMissing,
 
+    /// 任务需要但当前环境缺少的引擎工具（如 ffmpeg）。
+    ///
+    /// 发布版内置 ffmpeg / ffprobe，出现该错误说明应用包被破坏，
+    /// 因此直接阻断任务，而不是让 yt-dlp 产出损坏的文件。
+    #[error("应用内置的 {0} 不可用，请重新安装 VideoFlow")]
+    EngineMissing(&'static str),
+
     #[error("视频信息解析失败：{0}")]
     Inspection(String),
 

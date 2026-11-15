@@ -76,6 +76,14 @@ pub fn run() {
                 ),
                 None => log::warn!("未找到 FFmpeg，合并与音频提取不可用"),
             }
+            match &engines.ffprobe {
+                Some(path) => log::info!(
+                    "ffprobe: {} ({})",
+                    path.display(),
+                    engines.ffprobe_version.as_deref().unwrap_or("unknown")
+                ),
+                None => log::warn!("未找到 FFprobe，音频格式转换不可用"),
+            }
 
             let manager = TaskManager::new(handle, db, engines, settings, cache_dir);
             if let Err(err) = manager.recover() {
@@ -110,6 +118,7 @@ pub fn run() {
             commands::settings::update_settings,
             commands::system::get_engine_status,
             commands::system::refresh_engine_state,
+            commands::system::reveal_licenses,
         ])
         .run(tauri::generate_context!())
         .expect("VideoFlow 启动失败");

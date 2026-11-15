@@ -77,6 +77,10 @@ export const api = {
   refreshEngineState(): Promise<EngineStatus> {
     return invoke<EngineStatus>("refresh_engine_state");
   },
+
+  revealLicenses(): Promise<void> {
+    return invoke<void>("reveal_licenses");
+  },
 };
 
 /** 把后端返回的错误统一转换成可展示文案 */

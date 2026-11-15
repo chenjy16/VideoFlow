@@ -8,7 +8,11 @@ src-tauri/target/
 src-tauri/gen/
 
 # sidecar 二进制（约 36MB，用 scripts/fetch-yt-dlp.sh 获取）
+# ffmpeg / ffprobe 由 scripts/build-ffmpeg-lgpl.sh 自行构建，同样不入库
 src-tauri/binaries/
+
+# 本地构建缓存（FFmpeg / LAME / libopus 源码与中间产物）
+.build/
 
 # 本地配置
 .env

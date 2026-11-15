@@ -39,7 +39,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/yt-dlp"],
+    "externalBin": ["binaries/yt-dlp", "binaries/ffmpeg", "binaries/ffprobe"],
+    "resources": {
+      "../licenses": "LICENSES"
+    },
     "category": "Video",
     "shortDescription": "视频与音频下载器",
     "longDescription": "基于 yt-dlp 的 macOS 原生视频与音频下载工具。",

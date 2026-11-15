@@ -139,9 +139,18 @@ impl TaskManager {
         let engines = self.engines_snapshot();
         engines.require_yt_dlp()?;
 
-        if request.kind == crate::domain::TaskKind::Video && !engines.has_ffmpeg() {
-            // 分离流合并与音频提取必须有 FFmpeg，否则会产生损坏的文件
-            log::warn!("未检测到 FFmpeg，合并与音频提取功能不可用");
+        // 分离流合并与音频提取必须有 FFmpeg（ffprobe 同样必需：yt-dlp 的后处理
+        // 会用它读取码流信息），否则 yt-dlp 会留下无法播放的文件。
+        // selector 里带 '+' 说明是分离的音视频流，不论容器如何都需要合并。
+        // 缺工具时直接报错，而不是先下载再失败。
+        let needs_ffmpeg = request.merge_to_mp4
+            || request.audio_format.is_some()
+            || request.selector.contains('+');
+        if needs_ffmpeg && !engines.has_ffmpeg() {
+            return Err(AppError::EngineMissing("FFmpeg"));
+        }
+        if needs_ffmpeg && !engines.has_ffprobe() {
+            return Err(AppError::EngineMissing("FFprobe"));
         }
 
         let output_dir = PathBuf::from(&request.output_dir);

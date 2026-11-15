@@ -13,6 +13,8 @@ pub struct EngineStatus {
     pub yt_dlp_version: Option<String>,
     pub ffmpeg_path: Option<String>,
     pub ffmpeg_version: Option<String>,
+    pub ffprobe_path: Option<String>,
+    pub ffprobe_version: Option<String>,
     pub ready: bool,
 }
 
@@ -25,21 +27,30 @@ pub struct Engines {
     pub yt_dlp_version: Option<String>,
     pub ffmpeg: Option<PathBuf>,
     pub ffmpeg_version: Option<String>,
+    pub ffprobe: Option<PathBuf>,
+    pub ffprobe_version: Option<String>,
 }
 
 impl Engines {
-    /// 解析 yt-dlp 与 ffmpeg 路径。
+    /// 解析 yt-dlp / ffmpeg / ffprobe 路径。
     ///
-    /// 顺序：环境变量覆盖 -> 随包 sidecar -> 开发目录 -> 常见安装位置 -> PATH。
+    /// 发布版（运行于 `.app/Contents/MacOS`）只认应用自带的可执行文件，
+    /// 不回落系统或 Homebrew 路径；开发期才允许多路径查找，便于本机调试。
     pub async fn detect() -> Self {
-        let yt_dlp = find_yt_dlp();
+        let yt_dlp = resolve_ytdlp();
         let yt_dlp_version = match &yt_dlp {
             Some(path) => probe_version(path, &["--version"]).await,
             None => None,
         };
 
-        let ffmpeg = find_ffmpeg();
+        let ffmpeg = resolve_ffmpeg();
         let ffmpeg_version = match &ffmpeg {
+            Some(path) => probe_version(path, &["-version"]).await,
+            None => None,
+        };
+
+        let ffprobe = resolve_ffprobe();
+        let ffprobe_version = match &ffprobe {
             Some(path) => probe_version(path, &["-version"]).await,
             None => None,
         };
@@ -49,6 +60,8 @@ impl Engines {
             yt_dlp_version,
             ffmpeg,
             ffmpeg_version,
+            ffprobe,
+            ffprobe_version,
         }
     }
 
@@ -58,6 +71,8 @@ impl Engines {
             yt_dlp_version: self.yt_dlp_version.clone(),
             ffmpeg_path: self.ffmpeg.as_ref().map(|path| path.display().to_string()),
             ffmpeg_version: self.ffmpeg_version.clone(),
+            ffprobe_path: self.ffprobe.as_ref().map(|path| path.display().to_string()),
+            ffprobe_version: self.ffprobe_version.clone(),
             ready: self.yt_dlp.is_some(),
         }
     }
@@ -70,7 +85,13 @@ impl Engines {
         self.ffmpeg.is_some()
     }
 
+    pub fn has_ffprobe(&self) -> bool {
+        self.ffprobe.is_some()
+    }
+
     /// 传给 yt-dlp 的 `--ffmpeg-location`，为空表示交给 yt-dlp 自行查找。
+    ///
+    /// ffmpeg 与 ffprobe 同目录，yt-dlp 会一并找到。
     pub fn ffmpeg_dir(&self) -> Option<PathBuf> {
         self.ffmpeg
             .as_ref()
@@ -105,7 +126,7 @@ fn is_executable(path: &Path) -> bool {
 fn sidecar_candidates(name: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    // 1. 打包后：externalBin 会被放到可执行文件同级目录
+    // 1. 打包后：externalBin 会被放到可执行文件同级目录（Contents/MacOS）
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join(name));
@@ -122,6 +143,26 @@ fn sidecar_candidates(name: &str) -> Vec<PathBuf> {
     candidates.push(manifest_dir.join("binaries").join(name));
 
     candidates
+}
+
+/// 判断可执行文件路径是否位于 macOS 应用包内（`.app/Contents/MacOS/`）。
+fn looks_bundled(exe: &Path) -> bool {
+    let Some(dir) = exe.parent() else {
+        return false;
+    };
+    let is_macos_dir = dir.file_name().is_some_and(|name| name == "MacOS");
+    let is_contents_dir = dir
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "Contents");
+    is_macos_dir && is_contents_dir
+}
+
+/// 当前进程是否运行在打包后的 `.app` 内。
+fn is_bundled_app() -> bool {
+    std::env::current_exe()
+        .map(|exe| looks_bundled(&exe))
+        .unwrap_or(false)
 }
 
 fn common_install_paths(name: &str) -> Vec<PathBuf> {
@@ -150,44 +191,53 @@ fn lookup_in_path(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn find_yt_dlp() -> Option<PathBuf> {
-    if let Some(raw) = std::env::var_os("VIDEOFLOW_YTDLP_PATH") {
-        let path = PathBuf::from(raw);
-        if is_executable(&path) {
-            return Some(path);
-        }
-    }
-
-    for candidate in sidecar_candidates("yt-dlp")
-        .into_iter()
-        .chain(common_install_paths("yt-dlp"))
-    {
-        if is_executable(&candidate) {
-            return Some(candidate);
-        }
-    }
-
-    lookup_in_path("yt-dlp")
+fn resolve_ytdlp() -> Option<PathBuf> {
+    resolve_tool("yt-dlp", "VIDEOFLOW_YTDLP_PATH")
 }
 
-fn find_ffmpeg() -> Option<PathBuf> {
-    if let Some(raw) = std::env::var_os("VIDEOFLOW_FFMPEG_PATH") {
+fn resolve_ffmpeg() -> Option<PathBuf> {
+    resolve_tool("ffmpeg", "VIDEOFLOW_FFMPEG_PATH")
+}
+
+fn resolve_ffprobe() -> Option<PathBuf> {
+    resolve_tool("ffprobe", "VIDEOFLOW_FFPROBE_PATH")
+}
+
+/// 统一的工具路径解析。
+///
+/// 顺序：
+///   1. 环境变量显式覆盖（便于排障，发布版也生效）
+///   2. 随包 sidecar / 开发目录 binaries
+///   3. 仅开发期：常见安装位置与 PATH
+///
+/// 发布版**不允许**使用开发机上的 Homebrew / PATH 工具，否则会出现
+/// “体积很小但换个机器就跑不起来”的伪打包。
+fn resolve_tool(name: &str, env_key: &str) -> Option<PathBuf> {
+    if let Some(raw) = std::env::var_os(env_key) {
         let path = PathBuf::from(raw);
         if is_executable(&path) {
             return Some(path);
         }
+        log::warn!("{} 指定的路径不可执行，忽略：{}", env_key, path.display());
     }
 
-    for candidate in sidecar_candidates("ffmpeg")
-        .into_iter()
-        .chain(common_install_paths("ffmpeg"))
-    {
+    for candidate in sidecar_candidates(name) {
         if is_executable(&candidate) {
             return Some(candidate);
         }
     }
 
-    lookup_in_path("ffmpeg")
+    if is_bundled_app() {
+        return None;
+    }
+
+    for candidate in common_install_paths(name) {
+        if is_executable(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    lookup_in_path(name)
 }
 
 /// 运行 `--version` 之类的探针命令并取首行输出。
@@ -207,17 +257,22 @@ async fn probe_version(bin: &Path, args: &[&str]) -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let first_line = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?
-        .to_string();
+    let first_line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    Some(short_version(first_line))
+}
 
-    // ffmpeg -version 首行形如 "ffmpeg version 8.0 Copyright ..."，只取版本号片段
-    if let Some(rest) = first_line.strip_prefix("ffmpeg version ") {
-        return Some(rest.split_whitespace().next().unwrap_or(rest).to_string());
+/// 从 `-version` 首行中截出纯版本号。
+///
+/// ffmpeg / ffprobe 的首行形如 "ffprobe version 8.0.1 Copyright (c) ..."，
+/// 其余工具（yt-dlp）本身就是纯版本号，原样返回。
+fn short_version(first_line: &str) -> String {
+    let rest = first_line
+        .strip_prefix("ffmpeg version ")
+        .or_else(|| first_line.strip_prefix("ffprobe version "));
+    match rest {
+        Some(rest) => rest.split_whitespace().next().unwrap_or(rest).to_string(),
+        None => first_line.to_string(),
     }
-    Some(first_line)
 }
 
 #[cfg(test)]
@@ -234,5 +289,29 @@ mod tests {
     fn target_triple_matches_platform() {
         let triple = target_triple();
         assert!(triple.contains("apple-darwin"));
+    }
+
+    #[test]
+    fn short_version_strips_ffmpeg_banner() {
+        assert_eq!(
+            short_version("ffmpeg version 8.0.1 Copyright (c) 2007-2025 the FFmpeg developers"),
+            "8.0.1"
+        );
+        assert_eq!(
+            short_version("ffprobe version 8.0.1 Copyright (c) 2007-2025 the FFmpeg developers"),
+            "8.0.1"
+        );
+        assert_eq!(short_version("2026.10.26"), "2026.10.26");
+    }
+
+    #[test]
+    fn bundled_detection_recognizes_app_layout() {
+        assert!(looks_bundled(Path::new(
+            "/Applications/VideoFlow.app/Contents/MacOS/videoflow"
+        )));
+        assert!(!looks_bundled(Path::new(
+            "/Users/dev/project/src-tauri/target/debug/videoflow"
+        )));
+        assert!(!looks_bundled(Path::new("/opt/homebrew/bin/ffmpeg")));
     }
 }

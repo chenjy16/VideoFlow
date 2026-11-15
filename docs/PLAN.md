@@ -175,6 +175,9 @@ cargo test              # 单元测试（不触网）
 
 ## 10. macOS Release 构建与发布验证（2026-11-14）
 
+> 本节是首轮记录。**FFmpeg 随包、许可证文件、ffprobe 集成、版本号解析等已由第 11 节取代**，
+> 如有冲突以第 11 节为准。
+
 本轮不新增功能、不改动已验证的下载核心逻辑，只做打包与发布级验证。
 
 ### 10.1 打包架构审查结论
@@ -291,4 +294,49 @@ cargo test              # 单元测试（不触网）
 | Intel / universal 构建 | 未生成、未验证 |
 | 第三方许可证声明文件 | 未随包 |
 | 自动更新 | 未实现 |
+
+## 11. Release Hardening：FFmpeg 静态 LGPL + yt-dlp entitlement（2026-11-15）
+
+本轮按两项决策执行：FFmpeg 改为**随包分发的静态 LGPL 构建**；yt-dlp **保留 onefile 与现有
+entitlement**。详细取证见：
+
+- `docs/THIRD_PARTY_LICENSES.md` —— 组件清单、LGPL v2.1 §6 义务逐条落地、GPL 排除证据
+- `docs/NOTARIZATION.md` —— 签名/entitlement 决策、安全影响、公证 BLOCKED 与操作模板
+- `docs/RELEASE_HARDENING_REPORT.md` —— 本轮完整结论、变更清单、验证矩阵与哈希
+
+### 11.1 打包架构变化
+
+| 项 | 第 10 节（旧） | 现在 |
+| --- | --- | --- |
+| FFmpeg | 运行时取 `/opt/homebrew/bin/ffmpeg`（8.0 GPLv3） | 随包 `Contents/MacOS/ffmpeg`（8.0.1，静态 LGPL） |
+| ffprobe | 未纳入 | 随包 `Contents/MacOS/ffprobe`（8.0.1） |
+| 发布版路径解析 | 允许回落 Homebrew / PATH | **不回落**：只认 `.app/Contents/MacOS` 内 sidecar，缺失即硬拦截 |
+| 许可证声明 | 未随包 | `Contents/Resources/LICENSES/`（6 个文件），设置页可打开 |
+| 引擎不可用 | 仅 `log::warn` | 需要 FFmpeg 的任务在创建时返回 `EngineMissing`，不再“下载完才失败” |
+
+### 11.2 FFmpeg 构建
+
+`scripts/build-ffmpeg-lgpl.sh`：FFmpeg 8.0.1 + LAME 3.100（LGPL-2.0）+ libopus 1.5.2（BSD-3-Clause），
+`--disable-gpl --disable-version3 --disable-nonfree --disable-autodetect --disable-everything` + 组件白名单，
+`-arch arm64 -mmacosx-version-min=11.0`。产物 8.0 MB / 7.8 MB，动态依赖只有系统库。
+
+合规不依赖单一开关：`config.h` 三个宏为 0、外部库仅 2 个、`EXTRALIBS=-lm -lz`、GPL-only 目标文件缺失、
+`x264_*/x265_*/vpx_*` 符号为 0、`ffmpeg -L` 自述 LGPL v2.1+。
+
+LGPL 静态链接义务：许可证文本随包 + 固定源码与哈希 + **589 个 `.o` / 8 个 `.a`**（`KEEP_OBJECTS=1`）
++ 构建脚本 + 3 年书面要约（`licenses/SOURCE_OFFER.txt`）。
+
+### 11.3 yt-dlp
+
+保持 onefile 与 `com.apple.security.cs.disable-library-validation`。保留原因：onefile 运行时解压异 Team ID 的
+`Python.framework` 再 `dlopen`，Hardened Runtime 的 library validation 会拒绝，导致 `exit=255`。
+安全影响与未来收敛方向（onedir 是当前 PyInstaller 架构下更值得评估的方案，但不是唯一方案）见 `docs/NOTARIZATION.md`。
+
+### 11.4 结论与遗留
+
+- 通过：构建、审计、集成、门禁（Rust 34 tests、前端 4 项全 0）、签名构建、DMG 内隔离运行、
+  合并与 6 种音频格式、yt-dlp 端到端。
+- **BLOCKED**：公证（无 Apple 凭据）。
+- **NOT TESTED**：设置页「第三方许可证」按钮的真实点击（UI 自动化被前台窗口抢占）。
+- 未构建：Intel / universal。
 

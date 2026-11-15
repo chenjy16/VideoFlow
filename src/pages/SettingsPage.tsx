@@ -111,6 +111,15 @@ export function SettingsPage() {
     }
   };
 
+  const openLicenses = async () => {
+    setError(null);
+    try {
+      await api.revealLicenses();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    }
+  };
+
   if (!settings) {
     return (
       <div className="flex flex-col gap-5">
@@ -288,10 +297,23 @@ export function SettingsPage() {
               {engine?.ffmpegVersion ?? "—"}
             </span>
           </div>
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+            <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="w-[64px] shrink-0 text-[11px] text-muted-foreground">FFprobe</span>
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[11px]"
+              title={engine?.ffprobePath ?? ""}
+            >
+              {engine?.ffprobePath ?? "未找到"}
+            </span>
+            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+              {engine?.ffprobeVersion ?? "—"}
+            </span>
+          </div>
           {!engine?.ready && (
             <Alert variant="warning" title="引擎未就绪">
-              缺少 yt-dlp 时无法解析或下载。请将 yt-dlp 放入应用资源目录，或安装到 PATH
-              后点击重新检测。
+              缺少 yt-dlp 时无法解析或下载。发布版引擎随应用包提供，若缺失请重新安装；
+              开发环境可用环境变量 VIDEOFLOW_YTDLP_PATH 指定自定义路径。
             </Alert>
           )}
         </CardContent>
@@ -311,6 +333,15 @@ export function SettingsPage() {
             <Info className="mt-0.5 size-3.5 shrink-0" />
             本应用不绕过 DRM 与付费墙，请仅下载你有权保存的内容，并遵守各站点服务条款。
           </p>
+          <Row
+            title="第三方许可证"
+            description="FFmpeg / LAME / libopus 为 LGPL 与 BSD 组件，随包附带完整许可证与获取源码的方式"
+          >
+            <Button variant="outline" size="sm" onClick={openLicenses}>
+              <FolderOpen />
+              查看
+            </Button>
+          </Row>
         </CardContent>
       </Card>
     </div>

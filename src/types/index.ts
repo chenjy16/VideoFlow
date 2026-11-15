@@ -131,5 +131,7 @@ export interface EngineStatus {
   ytDlpVersion: string | null;
   ffmpegPath: string | null;
   ffmpegVersion: string | null;
+  ffprobePath: string | null;
+  ffprobeVersion: string | null;
   ready: boolean;
 }
