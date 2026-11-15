@@ -364,9 +364,11 @@ manifest 的 `ticket_stapled` 由实测得出，不信环境变量。
 | 公证门禁（无票据时 3 项 FAIL） | **PASS** | 真实已签名 DMG：42 项中 3 项失败，均属公证项 |
 | 门禁无法用标签绕过 | **PASS** | 伪造 `NOTARIZATION_STATUS=ACCEPTED` 仍被票据断言拦住 |
 | `package-release.sh` 无票据拒绝打包 | **PASS** | 报“复制后的 DMG 丢失公证票据，不得发布” |
-| tag 测试发行门禁（14 个场景） | **PASS** | `scripts/test-release-gating.sh`，74 项断言全通过 |
-| 测试发行全链路（tag → Pre-release → DMG 安装启动） | 每轮 tag 实测回填 | 见 `docs/CI_CD_REPORT.md` |
-| workflow 全部 `run` 块语法 | **PASS** | 45 个 run 块 `bash -n` 全通过 |
-| **真实凭据下的完整公证（Accepted → staple → 发布）** | **NOT TESTED** | 仓库无凭据；尚未真实跑过 |
+| tag 测试发行门禁（14 个场景） | **PASS** | `scripts/test-release-gating.sh`，76 项断言全通过 |
+| 测试发行全链路（tag → Pre-release → DMG 安装启动） | **PASS** | `v0.1.0-test.3`（run 43692793949）：Pre-release 创建成功、6 资产、`shasum -c` 全 OK、DMG 挂载/安装/启动正常。详见 `docs/CI_CD_REPORT.md` |
+| 无 Apple 凭据时 tag 发布不再 `BLOCKED` | **PASS** | 三次 tag 实跑均通过 `validate` 的凭据检查（该路径已跳过） |
+| 产物确实未签名且无票据 | **PASS** | `codesign -dv` 无 `Authority=Developer ID`（仅 adhoc/linker-signed）、`stapler validate` 报无票据、manifest `ticket_stapled` 全 false |
+| workflow 全部 `run` 块语法 | **PASS** | 46 个 run 块 `bash -n` 全通过 |
+| **真实凭据下的完整公证（Accepted → staple → 发布）** | **NOT TESTED** | 仓库无凭据；尚未真实跑过（本轮不申请 Apple Developer Program） |
 | **`stapler staple` 对 DMG 内 `.app` 副本的行为** | **NOT TESTED** | 见 3.4 的结构限制说明 |
-| **`release` job 真实创建 Release** | **NOT TESTED** | 需在 tag + 公证通过后才会执行 |
+| **signed 模式真实创建正式 Release** | **NOT TESTED** | 需配齐 6 个 Apple Secrets 后手动 dispatch |

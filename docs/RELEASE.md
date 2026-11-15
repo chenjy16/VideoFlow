@@ -1,7 +1,8 @@
 # 发布手册（Release）
 
 本文档描述 VideoFlow 的三种发布模式、每一步的硬门禁，以及用户拿到 DMG 后如何验证。
-签名与公证的技术细节见 [NOTARIZATION.md](./NOTARIZATION.md)，CI 结构见 [CI_CD.md](./CI_CD.md)。
+签名与公证的技术细节见 [NOTARIZATION.md](./NOTARIZATION.md)，CI 结构见 [CI_CD.md](./CI_CD.md)，
+实测记录（run ID / SHA256 / 安装验证）见 [CI_CD_REPORT.md](./CI_CD_REPORT.md)。
 
 ## 0. 一分钟速查
 

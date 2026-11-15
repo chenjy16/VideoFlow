@@ -137,7 +137,7 @@ gh run download <run-id> -n videoflow-internal-test-0.1.0-<sha>
 | Phase 3 | CI 签名接入（Developer ID） | 代码保留，凭据未配置 |
 | Phase 4 | Apple 公证接入（Team API Key + staple） | 代码保留，仅在 signed 模式执行 |
 | Phase 5 | `internal_build` 内部测试构建（只出 Artifact） | 已实测通过 |
-| Phase 6 | 推送 `v*` tag → unsigned 测试发行 Pre-release | 本轮实现 |
+| Phase 6 | 推送 `v*` tag → unsigned 测试发行 Pre-release | 已实测通过（`v0.1.0-test.3`） |
 
 Phase 4 的公证实现（`notarize.sh` 与 `verify-release.sh` 的票据 / `ACCEPTED` 断言）没有被删除或放宽，
 只是在 tag / internal 模式下被 `if` 跳过。
