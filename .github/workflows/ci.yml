@@ -119,6 +119,13 @@ jobs:
       - name: 构建前端（提供 tauri frontendDist）
         run: pnpm build
 
+      # tauri-build 在编译期会校验 externalBin 指定的文件是否存在，缺任一个都会 panic。
+      # 真实 sidecar 体积大且不入库（.gitignore），而本工作流只做编译/静态/单测门禁、
+      # 不执行引擎，因此用带 VIDEOFLOW_CI_STUB 标记的占位文件。真实引擎由 release.yml
+      # 用 FFmpeg LGPL 产物 + fetch-yt-dlp.sh 提供，verify-release.sh 拒绝含该标记的二进制。
+      - name: 生成编译期占位 sidecar
+        run: ./scripts/prepare-ci-stubs.sh
+
       - name: 安装并校验 Rust 工具链
         run: |
           set -euo pipefail
