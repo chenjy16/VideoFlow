@@ -70,16 +70,16 @@ pub fn get_task_logs(
     state.manager.task_logs(&id, limit.unwrap_or(80))
 }
 
-/// 打开已下载的文件。
+/// Opens the downloaded file.
 #[tauri::command]
 pub fn open_download_file(id: String, app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
     let path = resolve_output_path(&state, &id)?;
     app.opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|err| AppError::Other(format!("无法打开文件：{err}")))
+        .map_err(|err| AppError::Other(format!("Couldn't open the file: {err}")))
 }
 
-/// 在 Finder 中显示文件。
+/// Reveals the file in Finder.
 #[tauri::command]
 pub fn reveal_download_in_finder(
     id: String,
@@ -89,17 +89,19 @@ pub fn reveal_download_in_finder(
     let path = resolve_output_path(&state, &id)?;
     app.opener()
         .reveal_item_in_dir(&path)
-        .map_err(|err| AppError::Other(format!("无法在 Finder 中显示：{err}")))
+        .map_err(|err| AppError::Other(format!("Couldn't reveal the file in Finder: {err}")))
 }
 
 fn resolve_output_path(state: &State<'_, AppState>, id: &str) -> AppResult<PathBuf> {
     let task = state.manager.get_task(id)?;
     let raw = task
         .output_path
-        .ok_or_else(|| AppError::Other("该任务还没有生成文件".into()))?;
+        .ok_or_else(|| AppError::Other("This task hasn't produced a file yet".into()))?;
     let path = PathBuf::from(raw);
     if !path.is_file() {
-        return Err(AppError::Other("文件已被移动或删除，无法打开".to_string()));
+        return Err(AppError::Other(
+            "The file was moved or deleted, so it can't be opened".to_string(),
+        ));
     }
     Ok(path)
 }

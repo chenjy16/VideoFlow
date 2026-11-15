@@ -11,20 +11,29 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Hint } from "@/components/ui/tooltip";
 import { Progress } from "@/components/ui/progress";
+import { Hint } from "@/components/ui/tooltip";
+import { t } from "@/i18n";
 import { api, toErrorMessage } from "@/lib/api";
-import { cn, formatBytes, formatDateTime, formatEta, formatSpeed, prettySite } from "@/lib/format";
+import { cn, formatBytes, formatDateTime, formatEta, formatSpeed, siteName } from "@/lib/format";
 import { isActive, useAppStore } from "@/store/app";
 import type { DownloadTask } from "@/types";
 
 interface TaskCardProps {
   task: DownloadTask;
-  /** 历史页使用更紧凑的布局 */
+  /** Tighter layout for the history list */
   compact?: boolean;
 }
 
-/** 单个任务卡片：状态、进度与操作 */
+function MetaDot() {
+  return (
+    <span className="text-faint" aria-hidden>
+      ·
+    </span>
+  );
+}
+
+/** One task row: identity, live progress and the actions valid for its state. */
 export function TaskCard({ task, compact = false }: TaskCardProps) {
   const progress = useAppStore((state) => state.progress[task.id]);
   const busy = useAppStore((state) => state.busy[task.id]);
@@ -38,6 +47,9 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
 
   const active = isActive(task.status);
   const canOpen = task.status === "completed" && Boolean(task.outputPath);
+  const canRetry =
+    task.status === "failed" || task.status === "cancelled" || task.status === "interrupted";
+
   const percent = progress?.percent ?? 0;
   const totalBytes = progress?.totalBytes ?? task.totalBytes;
   const downloadedBytes = progress?.downloadedBytes ?? task.downloadedBytes;
@@ -69,18 +81,39 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
       setConfirming(false);
     });
 
+  // Left/right halves of the progress caption. Only the backend state decides
+  // which line is shown — the UI never infers a state from timings or counts.
+  const progressLeft =
+    task.status === "waiting"
+      ? t.tasks.card.waiting
+      : task.status === "extracting"
+        ? t.tasks.card.preparing
+        : task.status === "merging"
+          ? t.tasks.card.merging
+          : `${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}`;
+
+  const progressRight = [
+    task.status === "downloading" ? formatSpeed(speed) : null,
+    task.status === "downloading" && percent > 0 ? `${percent.toFixed(0)}%` : null,
+    task.status === "downloading" && eta ? t.tasks.card.eta(formatEta(eta)) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const site = siteName(task.site);
+
   return (
     <div
       className={cn(
-        "flex flex-col gap-2 rounded-xl border border-border bg-card px-3 py-2.5 transition-colors",
-        active && "border-primary/25",
+        "flex flex-col gap-2.5 rounded-lg border bg-card p-3 transition-colors",
+        active ? "border-primary/30" : "border-border",
       )}
     >
       <div className="flex items-start gap-3">
         <div
           className={cn(
-            "relative aspect-video shrink-0 overflow-hidden rounded-md bg-muted",
-            compact ? "w-[60px]" : "w-[76px]",
+            "relative shrink-0 overflow-hidden rounded-md bg-muted",
+            compact ? "h-9 w-16" : "h-[54px] w-24",
           )}
         >
           {task.thumbnail ? (
@@ -92,8 +125,8 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
               referrerPolicy="no-referrer"
             />
           ) : (
-            <div className="flex size-full items-center justify-center text-[10px] text-muted-foreground">
-              无封面
+            <div className="flex size-full items-center justify-center text-caption text-faint">
+              {t.tasks.card.noThumbnail}
             </div>
           )}
         </div>
@@ -101,7 +134,7 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex items-start gap-2">
             <p
-              className="line-clamp-1 flex-1 text-[13px] font-medium leading-snug"
+              className="line-clamp-1 min-w-0 flex-1 text-card-title font-medium"
               title={task.title}
             >
               {task.title}
@@ -109,52 +142,50 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
             <StatusBadge status={task.status} />
           </div>
 
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
-            <span>{prettySite(task.site)}</span>
-            {task.formatLabel && <span className="truncate">· {task.formatLabel}</span>}
-            {task.container && <span>· {task.container.toUpperCase()}</span>}
-            <span>· {formatDateTime(task.createdAt)}</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-meta text-muted-foreground">
+            <span className="truncate">{site ?? t.common.unknownSite}</span>
+            {task.formatLabel && (
+              <>
+                <MetaDot />
+                <span className="truncate">{task.formatLabel}</span>
+              </>
+            )}
+            {task.container && (
+              <>
+                <MetaDot />
+                <span>{task.container.toUpperCase()}</span>
+              </>
+            )}
+            <MetaDot />
+            <span className="tabular-nums">{formatDateTime(task.createdAt)}</span>
           </div>
 
           {active && (
-            <div className="mt-0.5 flex flex-col gap-1">
+            <div className="mt-1 flex flex-col gap-1.5">
               <Progress
                 value={percent}
                 indeterminate={
                   task.status === "merging" || (!progress && task.status !== "waiting")
                 }
               />
-              <div className="flex items-center justify-between gap-2 text-[11px] tabular-nums text-muted-foreground">
-                <span className="truncate">
-                  {task.status === "waiting" && "等待下载"}
-                  {task.status === "extracting" && "正在解析链接…"}
-                  {task.status === "merging" && "正在合并音视频…"}
-                  {task.status === "downloading" &&
-                    `${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}`}
-                </span>
-                <span className="shrink-0">
-                  {task.status === "downloading" && (
-                    <>
-                      {formatSpeed(speed)} {percent > 0 && `· ${percent.toFixed(0)}%`}
-                      {eta ? ` · 剩余 ${formatEta(eta)}` : ""}
-                    </>
-                  )}
-                </span>
+              <div className="flex items-baseline justify-between gap-3 text-meta tabular-nums text-muted-foreground">
+                <span className="truncate">{progressLeft}</span>
+                {progressRight && <span className="shrink-0">{progressRight}</span>}
               </div>
             </div>
           )}
 
           {!active && task.status === "completed" && (
-            <p className="truncate text-[11px] text-muted-foreground" title={task.outputPath ?? ""}>
-              {formatBytes(task.totalBytes ?? task.downloadedBytes)} ·{" "}
-              {task.outputPath ?? "文件已就绪"}
+            <p className="truncate text-meta text-muted-foreground" title={task.outputPath ?? ""}>
+              {formatBytes(task.totalBytes ?? task.downloadedBytes)}
+              <MetaDot /> {task.outputPath ?? t.tasks.card.fileReady}
             </p>
           )}
 
           {(task.status === "failed" || task.status === "interrupted") && task.errorMessage && (
             <p
               className={cn(
-                "line-clamp-2 rounded bg-destructive/8 px-1.5 py-1 text-[11px] leading-snug",
+                "line-clamp-2 rounded bg-destructive/8 px-1.5 py-1 text-meta",
                 task.status === "interrupted" ? "text-warning" : "text-destructive",
               )}
               title={task.errorMessage}
@@ -164,14 +195,14 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
           )}
 
           {error && (
-            <p className="rounded bg-destructive/8 px-1.5 py-1 text-[11px] leading-snug text-destructive">
+            <p className="rounded bg-destructive/8 px-1.5 py-1 text-meta text-destructive">
               {error}
             </p>
           )}
         </div>
       </div>
 
-      <div className={cn("flex items-center justify-end gap-1.5", compact && "-mt-0.5")}>
+      <div className="flex items-center justify-end gap-2">
         {active && (
           <Button
             variant="outline"
@@ -180,13 +211,11 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
             onClick={() => run(() => cancelTask(task.id))}
           >
             {busy ? <Loader2 className="animate-spin" /> : <Square />}
-            取消
+            {t.tasks.card.actions.cancel}
           </Button>
         )}
 
-        {(task.status === "failed" ||
-          task.status === "cancelled" ||
-          task.status === "interrupted") && (
+        {canRetry && (
           <Button
             variant="secondary"
             size="sm"
@@ -194,7 +223,7 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
             onClick={() => run(() => retryTask(task.id))}
           >
             {busy ? <Loader2 className="animate-spin" /> : <RotateCw />}
-            重试
+            {t.tasks.card.actions.retry}
           </Button>
         )}
 
@@ -202,14 +231,14 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
           <>
             <Button variant="secondary" size="sm" onClick={openFile}>
               <Play />
-              打开文件
+              {t.tasks.card.actions.open}
             </Button>
-            <Hint label="在 Finder 中显示">
+            <Hint label={t.tasks.card.actions.reveal}>
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={revealFile}
-                aria-label="在 Finder 中显示"
+                aria-label={t.tasks.card.actions.reveal}
               >
                 <FolderOpen />
               </Button>
@@ -218,13 +247,13 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
         )}
 
         {!active && (
-          <Hint label="重新下载">
+          <Hint label={t.tasks.card.actions.downloadAgain}>
             <Button
               variant="ghost"
               size="icon"
               disabled={busy}
               onClick={() => run(() => redownloadTask(task.id))}
-              aria-label="重新下载"
+              aria-label={t.tasks.card.actions.downloadAgain}
             >
               <RotateCw />
             </Button>
@@ -232,13 +261,13 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
         )}
 
         {!active && (
-          <Hint label="移除记录（不会删除文件）">
+          <Hint label={t.tasks.card.actions.remove}>
             <Button
               variant="ghost"
               size="icon"
               disabled={busy}
               onClick={() => setConfirming(true)}
-              aria-label="移除记录"
+              aria-label={t.tasks.card.actions.remove}
             >
               <Trash2 />
             </Button>
@@ -249,18 +278,16 @@ export function TaskCard({ task, compact = false }: TaskCardProps) {
       <Dialog open={confirming} onOpenChange={setConfirming}>
         <DialogContent className="w-[min(440px,calc(100vw-48px))]">
           <DialogHeader>
-            <DialogTitle>移除下载记录？</DialogTitle>
-            <DialogDescription>
-              仅从列表中移除该记录，已下载的文件会保留在原位置。此操作不可撤销。
-            </DialogDescription>
+            <DialogTitle>{t.tasks.card.removeDialog.title}</DialogTitle>
+            <DialogDescription>{t.tasks.card.removeDialog.description}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-              取消
+              {t.common.cancel}
             </Button>
             <Button variant="destructive" size="sm" disabled={busy} onClick={remove}>
               {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
-              移除记录
+              {t.tasks.card.removeDialog.confirm}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -28,7 +28,7 @@ impl AppSettings {
     }
 }
 
-/// 设置更新补丁，只更新显式提供的字段。
+/// Settings patch: only the explicitly provided fields are updated.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPatch {
@@ -45,12 +45,12 @@ impl AppSettings {
             let trimmed = dir.trim();
             if !trimmed.starts_with('/') {
                 return Err(crate::error::AppError::OutputDir(
-                    "下载目录必须是绝对路径".into(),
+                    "The download folder must be an absolute path".into(),
                 ));
             }
             if trimmed.contains("..") {
                 return Err(crate::error::AppError::OutputDir(
-                    "下载目录包含非法路径片段".into(),
+                    "The download folder contains an invalid path segment".into(),
                 ));
             }
             self.download_dir = trimmed.to_string();
@@ -59,7 +59,7 @@ impl AppSettings {
             let allowed = ["mp4", "mkv", "original"];
             if !allowed.contains(&container.as_str()) {
                 return Err(crate::error::AppError::Other(format!(
-                    "不支持的默认容器：{container}"
+                    "Unsupported default container: {container}"
                 )));
             }
             self.default_container = container;
@@ -68,7 +68,7 @@ impl AppSettings {
             let allowed = ["best", "1080p", "720p", "480p", "360p"];
             if !allowed.contains(&quality.as_str()) {
                 return Err(crate::error::AppError::Other(format!(
-                    "不支持的默认清晰度：{quality}"
+                    "Unsupported default quality: {quality}"
                 )));
             }
             self.default_quality = quality;
@@ -76,7 +76,7 @@ impl AppSettings {
         if let Some(max) = patch.max_concurrent {
             if !(1..=5).contains(&max) {
                 return Err(crate::error::AppError::Other(
-                    "并发下载数需在 1 - 5 之间".into(),
+                    "Concurrent downloads must stay between 1 and 5".into(),
                 ));
             }
             self.max_concurrent = max;

@@ -32,7 +32,7 @@ export function useAppEvents() {
     };
 
     register().catch((error) => {
-      console.error("订阅任务事件失败", error);
+      console.error("Couldn't subscribe to task events", error);
     });
 
     return () => {

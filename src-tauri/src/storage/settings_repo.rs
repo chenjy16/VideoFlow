@@ -21,7 +21,7 @@ pub fn load(db: &Database, default_dir: &str) -> AppResult<AppSettings> {
         Some(value) => match serde_json::from_str::<AppSettings>(&value) {
             Ok(settings) => Ok(settings),
             Err(err) => {
-                log::warn!("设置数据损坏，已回退默认值: {err}");
+                log::warn!("Settings payload is corrupted, falling back to defaults: {err}");
                 Ok(AppSettings::defaults(default_dir.to_string()))
             }
         },

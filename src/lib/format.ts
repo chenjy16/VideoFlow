@@ -5,7 +5,7 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/** 人类可读的文件体积 */
+/** Human readable byte size */
 export function formatBytes(bytes?: number | null): string {
   if (bytes === null || bytes === undefined || Number.isNaN(bytes) || bytes <= 0) {
     return "—";
@@ -17,25 +17,25 @@ export function formatBytes(bytes?: number | null): string {
   return `${value.toFixed(digits)} ${units[exponent]}`;
 }
 
-/** 下载速度 */
+/** Download speed */
 export function formatSpeed(bytesPerSecond?: number | null): string {
   if (!bytesPerSecond || bytesPerSecond <= 0) return "—";
   return `${formatBytes(bytesPerSecond)}/s`;
 }
 
-/** 剩余时间（秒） */
+/** Remaining time, abbreviated (45s / 3m 20s / 1h 05m) */
 export function formatEta(seconds?: number | null): string {
   if (seconds === null || seconds === undefined || seconds <= 0) return "—";
   const total = Math.round(seconds);
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const secs = total % 60;
-  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
-  if (minutes > 0) return `${minutes} 分 ${secs} 秒`;
-  return `${secs} 秒`;
+  if (hours > 0) return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
+  if (minutes > 0) return `${minutes}m ${secs.toString().padStart(2, "0")}s`;
+  return `${secs}s`;
 }
 
-/** 视频时长 */
+/** Media duration as H:MM:SS / M:SS */
 export function formatDuration(seconds?: number | null): string {
   if (!seconds || seconds <= 0) return "—";
   const total = Math.round(seconds);
@@ -46,20 +46,23 @@ export function formatDuration(seconds?: number | null): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
 }
 
-/** 时间戳展示 */
+/**
+ * Timestamp in the UI language's conventions (Nov 15, 2:08 PM).
+ * Fixed to en-US so an English UI never renders localised date names.
+ */
 export function formatDateTime(value?: string | null): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
     minute: "2-digit",
   }).format(date);
 }
 
-/** 编码名简写：avc1.640032 -> H.264 */
+/** Codec name shorthand: avc1.640032 -> H.264 */
 export function prettyCodec(codec?: string | null): string {
   if (!codec || codec === "none") return "—";
   const lower = codec.toLowerCase();
@@ -74,8 +77,11 @@ export function prettyCodec(codec?: string | null): string {
   return codec;
 }
 
-/** 站点名美化 */
-export function prettySite(site?: string | null): string {
-  if (!site) return "未知站点";
-  return site;
+/**
+ * Site name as reported by yt-dlp, or null when it is missing/blank.
+ * The caller supplies the fallback so the wording stays in the dictionary.
+ */
+export function siteName(site?: string | null): string | null {
+  const trimmed = site?.trim();
+  return trimmed ? trimmed : null;
 }

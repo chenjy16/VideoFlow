@@ -161,7 +161,7 @@ async fn run_download(
         .kill_on_drop(true)
         .env("NO_COLOR", "1");
 
-    // 独立进程组：取消时可以向 yt-dlp 及其 ffmpeg 子进程一起发信号
+    // Separate process group: cancelling signals yt-dlp together with its ffmpeg children
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -175,7 +175,7 @@ async fn run_download(
                 cancelled: false,
                 success: false,
                 output_path: None,
-                error: Some(format!("无法启动 yt-dlp：{err}")),
+                error: Some(format!("Couldn't start yt-dlp: {err}")),
                 log: String::new(),
             }
         }
@@ -185,7 +185,7 @@ async fn run_download(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    // stderr 单独读取，避免管道缓冲区写满阻塞子进程
+    // stderr is read on its own, so a full pipe buffer can't block the child process
     let stderr_handle = stderr.map(|stream| {
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
@@ -226,7 +226,7 @@ async fn run_download(
         }
     }
 
-    // 等待退出：先礼貌 SIGINT（yt-dlp 会保存 .part），超时再强杀
+    // Wait for exit: polite SIGINT first (yt-dlp saves the .part), then SIGKILL after the grace period
     let status = match tokio::time::timeout(Duration::from_secs(8), child.wait()).await {
         Ok(result) => result.ok(),
         Err(_) => {
@@ -257,9 +257,9 @@ async fn run_download(
     let success = status.map(|s| s.success()).unwrap_or(false);
     if !success {
         let detail = if log.trim().is_empty() {
-            "yt-dlp 未正常退出".to_string()
+            "yt-dlp exited unexpectedly".to_string()
         } else {
-            log.lines().last().unwrap_or("下载失败").to_string()
+            log.lines().last().unwrap_or("Download failed").to_string()
         };
         return RunOutcome {
             cancelled: false,
@@ -270,7 +270,7 @@ async fn run_download(
         };
     }
 
-    // 校验输出文件真实存在且是本次运行产出的，绝不伪造成功状态
+    // Verify the output file really exists and came from this run — never fake success
     match output_path.as_ref().map(Path::new) {
         Some(path) if path.is_file() => {
             let metadata = std::fs::metadata(path).ok();
@@ -280,7 +280,9 @@ async fn run_download(
                     cancelled: false,
                     success: false,
                     output_path: None,
-                    error: Some("输出文件为空，可能下载未完成".to_string()),
+                    error: Some(
+                        "The output file is empty, the download may be incomplete".to_string(),
+                    ),
                     log,
                 };
             }
@@ -299,7 +301,7 @@ async fn run_download(
                     success: false,
                     output_path: None,
                     error: Some(
-                        "输出文件未被本次下载更新，可能命中了上一次下载的同名文件".to_string(),
+                        "The output file wasn't touched by this run — a leftover file from an earlier download was picked up".to_string(),
                     ),
                     log,
                 };
@@ -316,7 +318,7 @@ async fn run_download(
             cancelled: false,
             success: false,
             output_path: None,
-            error: Some("下载进程已结束，但未找到输出文件".to_string()),
+            error: Some("The download finished but no output file was found".to_string()),
             log,
         },
     }
@@ -334,22 +336,22 @@ fn handle_line(line: &str, tx: &UnboundedSender<RunEvent>) {
             let name = progress.postprocessor.clone().unwrap_or_default();
             let finished = progress.status.as_deref() == Some("finished");
 
-            // 文件搬移是 yt-dlp 的内部收尾动作，对用户没有意义
+            // The file move is yt-dlp's internal bookkeeping step and means nothing to the user
             if name == "MoveFiles" {
                 return;
             }
 
             let detail = if name.contains("Merger") {
                 Some(if finished {
-                    "合并完成".to_string()
+                    "Merge complete".to_string()
                 } else {
-                    "正在使用 FFmpeg 合并音视频".to_string()
+                    "Merging audio and video with FFmpeg".to_string()
                 })
             } else {
                 Some(if finished {
-                    format!("{name} 完成")
+                    format!("{name} complete")
                 } else {
-                    format!("正在执行 {name}")
+                    format!("Running {name}")
                 })
             };
 
@@ -361,7 +363,7 @@ fn handle_line(line: &str, tx: &UnboundedSender<RunEvent>) {
     }
 }
 
-/// 输出模板：视频必须带上清晰度，否则不同清晰度会写入同名文件。
+/// Output template: videos must carry the resolution, otherwise two resolutions overwrite the same file.
 fn output_template(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::Video => "%(title).140B [%(id)s] %(resolution)s.%(ext)s",

@@ -1,12 +1,13 @@
 use crate::domain::{DownloadOption, MediaFormat, OptionCategory};
 
-/// 从真实 formats 动态生成下载选项。
+/// Builds the download options from the real formats list.
 ///
-/// 设计原则：
-/// 1. 不假设某站点一定存在 1080p / 720p，全部以 yt-dlp 返回的流为准；
-/// 2. 视频选项使用「真实 format_id 组合」，保证下载的就是用户看到的那条流；
-/// 3. 优先选择与 MP4 兼容的编码（H.264），同时保留其它编码选项；
-/// 4. 分离流需要 FFmpeg 合并，`requires_merge` 会透出给前端。
+/// Principles:
+/// 1. Never assume a site has 1080p / 720p — only streams yt-dlp reported are used;
+/// 2. Video options carry the real format_id combination, so the download is exactly
+///    the stream the user picked;
+/// 3. Prefer codecs that fit MP4 (H.264) while still offering the alternatives;
+/// 4. Separate streams need FFmpeg to merge; `requires_merge` is surfaced to the UI.
 pub fn build_options(formats: &[MediaFormat], duration: Option<f64>) -> Vec<DownloadOption> {
     let video_streams: Vec<&MediaFormat> = formats
         .iter()
@@ -30,7 +31,7 @@ pub fn build_options(formats: &[MediaFormat], duration: Option<f64>) -> Vec<Down
 
     let mut options: Vec<DownloadOption> = Vec::new();
 
-    // 1. 最佳画质（自动组合最高清晰度的视频流与最佳音频流）
+    // 1. Best quality (highest resolution video stream auto-paired with the best audio)
     if let Some(best) = heights.first().and_then(|height| {
         video_streams
             .iter()
@@ -42,9 +43,13 @@ pub fn build_options(formats: &[MediaFormat], duration: Option<f64>) -> Vec<Down
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     }) {
-        if let Some(option) =
-            video_option("best", OptionCategory::Best, best, best_audio, "最佳画质")
-        {
+        if let Some(option) = video_option(
+            "best",
+            OptionCategory::Best,
+            best,
+            best_audio,
+            "Best quality",
+        ) {
             options.push(option);
         }
     } else if let Some(audio) = best_audio {
@@ -52,12 +57,12 @@ pub fn build_options(formats: &[MediaFormat], duration: Option<f64>) -> Vec<Down
             "a-original",
             audio,
             None,
-            format!("最佳音频 · {}", audio.ext.to_uppercase()),
-            "保留原始音频格式，不转码".to_string(),
+            format!("Best audio · {}", audio.ext.to_uppercase()),
+            "Original audio format, no re-encoding".to_string(),
         ));
     }
 
-    // 2. 各清晰度视频（同一清晰度下按编码分别给出选项）
+    // 2. Every resolution (one option per codec family within that resolution)
     for height in &heights {
         let mut candidates: Vec<&MediaFormat> = video_streams
             .iter()
@@ -90,7 +95,7 @@ pub fn build_options(formats: &[MediaFormat], duration: Option<f64>) -> Vec<Down
         }
     }
 
-    // 3. 仅视频（不含音频，适合后期自行处理）
+    // 3. Video only (no audio track, for post-processing elsewhere)
     for height in heights.iter().take(3) {
         if let Some(best) = video_streams
             .iter()
@@ -102,12 +107,12 @@ pub fn build_options(formats: &[MediaFormat], duration: Option<f64>) -> Vec<Down
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
         {
-            let mut option = DownloadOption {
+            options.push(DownloadOption {
                 id: format!("vo-{height}"),
                 category: OptionCategory::VideoOnly,
-                label: format!("{height}p 仅视频"),
+                label: format!("{height}p · video only"),
                 description: Some(format!(
-                    "{} · {} · 无音轨",
+                    "{} · {} · no audio track",
                     best.ext.to_uppercase(),
                     codec_family(best.vcodec.as_deref())
                 )),
@@ -120,45 +125,41 @@ pub fn build_options(formats: &[MediaFormat], duration: Option<f64>) -> Vec<Down
                 estimated_bytes: best.size_bytes(),
                 requires_merge: false,
                 audio_format: None,
-            };
-            if option.label == "仅视频" {
-                option.label = format!("{height}p 仅视频");
-            }
-            options.push(option);
+            });
         }
     }
 
-    // 4. 仅音频
+    // 4. Audio only
     if let Some(audio) = best_audio {
         options.push(audio_option(
             "a-original",
             audio,
             None,
-            format!("最佳音频 · {}", audio.ext.to_uppercase()),
-            "保留原始音频格式（需要 FFmpeg 提取）".to_string(),
+            format!("Best audio · {}", audio.ext.to_uppercase()),
+            "Original audio format (FFmpeg extracts the track)".to_string(),
         ));
         options.push(audio_option(
             "a-mp3",
             audio,
             Some("mp3"),
             "MP3".to_string(),
-            "兼容性最好，需要 FFmpeg 转码".to_string(),
+            "Best compatibility, transcoded with FFmpeg".to_string(),
         ));
         options.push(audio_option(
             "a-m4a",
             audio,
             Some("m4a"),
             "M4A (AAC)".to_string(),
-            "适合 Apple 生态，需要 FFmpeg 处理".to_string(),
+            "Fits the Apple ecosystem, converted with FFmpeg".to_string(),
         ));
-        // WAV 体积巨大，仅在时长合理的场景下提供
+        // WAV files are huge, so only offer them for reasonable durations
         if duration.map(|d| d > 0.0 && d <= 7200.0).unwrap_or(false) {
             options.push(audio_option(
                 "a-wav",
                 audio,
                 Some("wav"),
                 "WAV".to_string(),
-                "无损未压缩音频，文件较大".to_string(),
+                "Uncompressed lossless audio, large file".to_string(),
             ));
         }
     } else if let Some(combined) = formats
@@ -171,7 +172,7 @@ pub fn build_options(formats: &[MediaFormat], duration: Option<f64>) -> Vec<Down
             combined,
             Some("mp3"),
             "MP3".to_string(),
-            "从音视频文件中提取音频".to_string(),
+            "Extracts the audio from this combined file".to_string(),
         ));
     }
 
@@ -188,7 +189,8 @@ fn video_option(
     let needs_audio = !video.has_audio();
     let audio = if needs_audio { best_audio } else { None };
 
-    // 有独立音轨但缺少音频流时，无法生成完整视频选项（仅音频站点）
+    // A separate audio track is missing from the video stream: no complete video
+    // option can be built (audio-only sites).
     if needs_audio && audio.is_none() {
         return None;
     }
@@ -211,9 +213,9 @@ fn video_option(
         parts.push(format!("{}fps", fps.round() as i64));
     }
     parts.push(if audio.is_some() {
-        "视频 + 音频".to_string()
+        "video + audio".to_string()
     } else {
-        "含音轨".to_string()
+        "with audio track".to_string()
     });
 
     let label = if category == OptionCategory::Best {
@@ -270,7 +272,7 @@ fn audio_option(
     }
 }
 
-/// 编码族：用于分组与展示。
+/// Codec family: used for grouping and display.
 fn codec_family(vcodec: Option<&str>) -> &'static str {
     let codec = vcodec.unwrap_or_default().to_lowercase();
     if codec.starts_with("avc1") || codec.starts_with("h264") {
@@ -284,9 +286,9 @@ fn codec_family(vcodec: Option<&str>) -> &'static str {
     } else if codec.starts_with("vp8") {
         "VP8"
     } else if codec.is_empty() || codec == "none" {
-        "未知"
+        "Unknown"
     } else {
-        "其它"
+        "Other"
     }
 }
 
@@ -301,7 +303,7 @@ fn family_slug(family: &str) -> &'static str {
     }
 }
 
-/// 视频流排序分数：优先 MP4 + H.264（macOS 兼容性最好），其次码率。
+/// Video stream score: MP4 + H.264 first (best macOS compatibility), then bitrate.
 fn video_score(format: &MediaFormat) -> f64 {
     let compatibility = if format.ext == "mp4" && codec_family(format.vcodec.as_deref()) == "H.264"
     {
@@ -317,7 +319,7 @@ fn video_score(format: &MediaFormat) -> f64 {
     compatibility * 1_000.0 + bitrate
 }
 
-/// 音频流排序分数：优先 m4a（AAC），其次码率。
+/// Audio stream score: m4a (AAC) first, then bitrate.
 fn audio_score(format: &MediaFormat) -> f64 {
     let compatibility = match format.ext.as_str() {
         "m4a" => 3.0,
@@ -374,7 +376,7 @@ mod tests {
         }
     }
 
-    /// 近似真实的 B 站 formats 结构
+    /// Roughly matches a real Bilibili `formats` payload
     fn bilibili_formats() -> Vec<MediaFormat> {
         vec![
             audio("30216", "m4a", 43.9, 1_167_152),
@@ -410,7 +412,7 @@ mod tests {
             .iter()
             .find(|o| o.id == "best")
             .expect("best option");
-        // 最高清晰度 + 最佳音频流
+        // Highest resolution + best audio stream
         assert!(
             best.selector.ends_with("+30280"),
             "selector = {}",

@@ -1,46 +1,46 @@
 use serde::Serialize;
 
-/// 应用统一错误类型。
+/// Application-wide error type.
 ///
-/// 所有错误都会以中文字符串形式返回给前端，保证 UI 能直接展示可读信息，
-/// 同时保留原始的 source 便于排查。
+/// Every variant surfaces to the frontend as a plain English string, so the UI can
+/// render it directly; the original `source` is kept for diagnostics.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("无效的链接：{0}")]
+    #[error("Invalid link: {0}")]
     InvalidUrl(String),
 
-    #[error("链接协议不受支持，仅支持 http / https：{0}")]
+    #[error("Unsupported link scheme. Only http and https are supported: {0}")]
     UnsupportedScheme(String),
 
-    #[error("未找到 yt-dlp 可执行文件，请安装后重试")]
+    #[error("yt-dlp wasn't found. Install it and try again.")]
     YtDlpMissing,
 
-    /// 任务需要但当前环境缺少的引擎工具（如 ffmpeg）。
+    /// Engine tool the task needs but this build doesn't have (e.g. ffmpeg).
     ///
-    /// 发布版内置 ffmpeg / ffprobe，出现该错误说明应用包被破坏，
-    /// 因此直接阻断任务，而不是让 yt-dlp 产出损坏的文件。
-    #[error("应用内置的 {0} 不可用，请重新安装 VideoFlow")]
+    /// Released builds bundle ffmpeg / ffprobe, so hitting this means the app bundle
+    /// is damaged. Block the task instead of letting yt-dlp write broken files.
+    #[error("The bundled {0} is unavailable. Reinstall VideoFlow.")]
     EngineMissing(&'static str),
 
-    #[error("视频信息解析失败：{0}")]
+    #[error("Couldn't read video info: {0}")]
     Inspection(String),
 
-    #[error("任务不存在或已被删除")]
+    #[error("This task no longer exists.")]
     TaskNotFound(String),
 
-    #[error("任务当前状态不允许该操作：{0}")]
+    #[error("This task can't do that right now: {0}")]
     InvalidState(String),
 
-    #[error("无法访问下载目录：{0}")]
+    #[error("Can't access the download folder: {0}")]
     OutputDir(String),
 
-    #[error("数据库错误：{0}")]
+    #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
 
-    #[error("文件操作失败：{0}")]
+    #[error("File operation failed: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("数据解析失败：{0}")]
+    #[error("Couldn't parse data: {0}")]
     Serde(#[from] serde_json::Error),
 
     #[error("{0}")]
@@ -58,13 +58,13 @@ impl Serialize for AppError {
 
 pub type AppResult<T> = Result<T, AppError>;
 
-/// 截断并清洗引擎输出，避免超长日志与敏感字段进入 UI / 数据库。
+/// Truncates and scrubs engine output so oversized logs and secrets never reach the UI / database.
 pub fn sanitize_engine_output(raw: &str, max_lines: usize) -> String {
     let mut kept: Vec<String> = raw
         .lines()
         .map(|line| line.trim_end())
         .filter(|line| !line.is_empty())
-        // Cookie 与认证信息不写入日志
+        // Never log cookies or credentials
         .filter(|line| {
             let lower = line.to_lowercase();
             !(lower.contains("cookie")

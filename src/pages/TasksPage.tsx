@@ -2,10 +2,17 @@ import { CheckCircle2, ListChecks, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-import { EmptyState, ErrorState, LoadingState, PageHeader } from "@/components/common/States";
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageHeader,
+  SectionLabel,
+} from "@/components/common/States";
 import { TaskCard } from "@/components/tasks/TaskCard";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { t } from "@/i18n";
 import { useAppStore } from "@/store/app";
 
 export function TasksPage() {
@@ -18,20 +25,21 @@ export function TasksPage() {
   const navigate = useNavigate();
   const [notice, setNotice] = useState<string | null>(null);
 
-  // 从下载页跳转过来时提示任务已创建，并清空路由 state 避免刷新重复提示
+  // A task created on the Download page navigates here once; clear the router
+  // state afterwards so a re-render doesn't repeat the banner.
   useEffect(() => {
     const createdId = (location.state as { createdId?: string } | null)?.createdId;
     if (!createdId) return;
-    setNotice("任务已加入队列，可在下方查看实时进度。");
+    setNotice(t.tasks.notice.body);
     navigate(location.pathname, { replace: true, state: null });
   }, [location.state, location.pathname, navigate]);
 
+  // The summary and the sections are derived from the backend state only —
+  // never from "how many tasks exist" or how long they have been around.
+  const queuedTasks = tasks.filter((task) => task.status === "waiting");
   const activeTasks = tasks.filter(
     (task) =>
-      task.status === "waiting" ||
-      task.status === "extracting" ||
-      task.status === "downloading" ||
-      task.status === "merging",
+      task.status === "extracting" || task.status === "downloading" || task.status === "merging",
   );
   const attentionTasks = tasks.filter(
     (task) => task.status === "failed" || task.status === "interrupted",
@@ -40,17 +48,23 @@ export function TasksPage() {
     .filter((task) => task.status === "completed" || task.status === "cancelled")
     .slice(0, 4);
 
-  const isEmpty = activeTasks.length === 0 && attentionTasks.length === 0;
+  const inProgress = [...activeTasks, ...queuedTasks];
+  const isEmpty = inProgress.length === 0 && attentionTasks.length === 0;
+
+  const summary =
+    activeTasks.length > 0 && queuedTasks.length > 0
+      ? t.tasks.summary.activeAndQueued(activeTasks.length, queuedTasks.length)
+      : activeTasks.length > 0
+        ? t.tasks.summary.active(activeTasks.length)
+        : queuedTasks.length > 0
+          ? t.tasks.summary.queued(queuedTasks.length)
+          : t.tasks.summary.idle;
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <PageHeader
-        title="任务"
-        description={
-          activeTasks.length > 0
-            ? `${activeTasks.length} 个任务正在执行`
-            : "队列空闲，可随时开始新的下载"
-        }
+        title={t.tasks.title}
+        description={summary}
         actions={
           <Button
             variant="ghost"
@@ -59,17 +73,17 @@ export function TasksPage() {
             disabled={loadingTasks}
           >
             <RefreshCw className={loadingTasks ? "animate-spin" : undefined} />
-            刷新
+            {t.common.refresh}
           </Button>
         }
       />
 
       {notice && (
-        <Alert variant="success" title="创建成功">
+        <Alert variant="success" title={t.tasks.notice.title}>
           <div className="flex items-center justify-between gap-3">
             <span>{notice}</span>
             <Button variant="ghost" size="sm" onClick={() => setNotice(null)}>
-              知道了
+              {t.tasks.notice.dismiss}
             </Button>
           </div>
         </Alert>
@@ -77,40 +91,38 @@ export function TasksPage() {
 
       {loadError && (
         <ErrorState
-          title="任务列表加载失败"
+          title={t.tasks.loadError}
           message={loadError}
           action={
             <div>
               <Button variant="outline" size="sm" onClick={() => void refreshTasks()}>
                 <RefreshCw />
-                重新加载
+                {t.common.reload}
               </Button>
             </div>
           }
         />
       )}
 
-      {loadingTasks && tasks.length === 0 && <LoadingState rows={3} label="正在读取任务…" />}
+      {loadingTasks && tasks.length === 0 && <LoadingState rows={3} label={t.tasks.loading} />}
 
       {!loadingTasks && tasks.length === 0 && !loadError && (
         <EmptyState
           icon={<ListChecks className="size-5" />}
-          title="还没有下载任务"
-          description="在下载页粘贴链接并选择格式，任务会出现在这里。"
+          title={t.tasks.empty.title}
+          description={t.tasks.empty.description}
           action={
             <Button asChild size="sm">
-              <Link to="/">去下载</Link>
+              <Link to="/">{t.tasks.empty.action}</Link>
             </Button>
           }
         />
       )}
 
-      {activeTasks.length > 0 && (
+      {inProgress.length > 0 && (
         <section className="flex flex-col gap-2">
-          <h2 className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
-            进行中
-          </h2>
-          {activeTasks.map((task) => (
+          <SectionLabel>{t.tasks.sections.active}</SectionLabel>
+          {inProgress.map((task) => (
             <TaskCard key={task.id} task={task} />
           ))}
         </section>
@@ -118,9 +130,7 @@ export function TasksPage() {
 
       {attentionTasks.length > 0 && (
         <section className="flex flex-col gap-2">
-          <h2 className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
-            需要处理
-          </h2>
+          <SectionLabel>{t.tasks.sections.attention}</SectionLabel>
           {attentionTasks.map((task) => (
             <TaskCard key={task.id} task={task} />
           ))}
@@ -130,11 +140,11 @@ export function TasksPage() {
       {!loadError && isEmpty && tasks.length > 0 && (
         <EmptyState
           icon={<CheckCircle2 className="size-5" />}
-          title="队列已清空"
-          description="所有任务都已结束，可以继续添加新的下载。"
+          title={t.tasks.idle.title}
+          description={t.tasks.idle.description}
           action={
             <Button asChild size="sm" variant="outline">
-              <Link to="/">下载新视频</Link>
+              <Link to="/">{t.tasks.idle.action}</Link>
             </Button>
           }
         />
@@ -143,14 +153,12 @@ export function TasksPage() {
       {recentTasks.length > 0 && (
         <section className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
-            <h2 className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
-              最近完成
-            </h2>
+            <SectionLabel>{t.tasks.sections.recent}</SectionLabel>
             <Link
               to="/history"
-              className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+              className="text-meta text-muted-foreground transition-colors hover:text-foreground"
             >
-              查看全部历史
+              {t.tasks.sections.viewAll}
             </Link>
           </div>
           {recentTasks.map((task) => (

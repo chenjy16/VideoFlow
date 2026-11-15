@@ -44,8 +44,8 @@
       "../licenses": "LICENSES"
     },
     "category": "Video",
-    "shortDescription": "视频与音频下载器",
-    "longDescription": "基于 yt-dlp 的 macOS 原生视频与音频下载工具。",
+    "shortDescription": "Video and audio downloader",
+    "longDescription": "A native macOS video and audio downloader powered by yt-dlp.",
     "macOS": {
       "minimumSystemVersion": "11.0",
       "hardenedRuntime": true,

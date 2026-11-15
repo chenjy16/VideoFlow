@@ -203,22 +203,26 @@ fn resolve_ffprobe() -> Option<PathBuf> {
     resolve_tool("ffprobe", "VIDEOFLOW_FFPROBE_PATH")
 }
 
-/// 统一的工具路径解析。
+/// Single place that resolves tool paths.
 ///
-/// 顺序：
-///   1. 环境变量显式覆盖（便于排障，发布版也生效）
-///   2. 随包 sidecar / 开发目录 binaries
-///   3. 仅开发期：常见安装位置与 PATH
+/// Order:
+///   1. Explicit environment override (handy for debugging, works in releases too)
+///   2. Bundled sidecar / the `binaries` folder during development
+///   3. Development only: well-known install locations and PATH
 ///
-/// 发布版**不允许**使用开发机上的 Homebrew / PATH 工具，否则会出现
-/// “体积很小但换个机器就跑不起来”的伪打包。
+/// A released build must **never** pick up Homebrew / PATH tools from the build machine,
+/// otherwise the bundle looks tiny but only runs where it was built.
 fn resolve_tool(name: &str, env_key: &str) -> Option<PathBuf> {
     if let Some(raw) = std::env::var_os(env_key) {
         let path = PathBuf::from(raw);
         if is_executable(&path) {
             return Some(path);
         }
-        log::warn!("{} 指定的路径不可执行，忽略：{}", env_key, path.display());
+        log::warn!(
+            "{} points to a non-executable path, ignoring it: {}",
+            env_key,
+            path.display()
+        );
     }
 
     for candidate in sidecar_candidates(name) {

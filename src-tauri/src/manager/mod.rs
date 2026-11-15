@@ -65,7 +65,10 @@ impl TaskManager {
             .db
             .with_conn(download_repo::mark_active_as_interrupted)?;
         if !ids.is_empty() {
-            log::info!("检测到 {} 个未完成任务，已标记为 interrupted", ids.len());
+            log::info!(
+                "{} unfinished task(s) detected, marked as interrupted",
+                ids.len()
+            );
         }
         Ok(ids.len())
     }
@@ -102,7 +105,7 @@ impl TaskManager {
         let mut guard = self
             .settings
             .lock()
-            .map_err(|_| AppError::Other("设置状态损坏".into()))?;
+            .map_err(|_| AppError::Other("Settings state is corrupted".into()))?;
         settings_repo::update(&self.db, patch, &mut guard)
     }
 
@@ -158,7 +161,7 @@ impl TaskManager {
             .map_err(|err| AppError::OutputDir(format!("{} ({err})", output_dir.display())))?;
         if !output_dir.is_dir() {
             return Err(AppError::OutputDir(format!(
-                "{} 不是目录",
+                "{} is not a folder",
                 output_dir.display()
             )));
         }
@@ -202,7 +205,7 @@ impl TaskManager {
             let runtime = self
                 .runtime
                 .lock()
-                .map_err(|_| AppError::Other("任务状态损坏".into()))?;
+                .map_err(|_| AppError::Other("Task state is corrupted".into()))?;
             runtime.cancels.get(id).cloned()
         };
 
@@ -222,7 +225,7 @@ impl TaskManager {
         }
 
         Err(AppError::InvalidState(format!(
-            "任务当前状态为 {}，无法取消",
+            "This task is {}, so it can't be cancelled",
             task.status.as_str()
         )))
     }
@@ -232,12 +235,12 @@ impl TaskManager {
         let task = self.get_task(id)?;
         if !task.status.is_terminal() {
             return Err(AppError::InvalidState(
-                "只有已结束的任务可以重新开始".into(),
+                "Only finished tasks can be restarted".into(),
             ));
         }
         if task.status == TaskStatus::Completed {
             return Err(AppError::InvalidState(
-                "任务已完成，如需重新下载请从历史记录中重新下载".into(),
+                "This task already completed. Start a new download from History instead.".into(),
             ));
         }
 
@@ -254,12 +257,14 @@ impl TaskManager {
     pub fn remove(self: &Arc<Self>, id: &str) -> AppResult<()> {
         let task = self.get_task(id)?;
         if task.status.is_running() {
-            return Err(AppError::InvalidState("请先取消任务再删除".into()));
+            return Err(AppError::InvalidState(
+                "Cancel the task before removing it".into(),
+            ));
         }
 
         self.runtime
             .lock()
-            .map_err(|_| AppError::Other("任务状态损坏".into()))?
+            .map_err(|_| AppError::Other("Task state is corrupted".into()))?
             .cancels
             .remove(id);
 
@@ -309,7 +314,7 @@ impl TaskManager {
             let next = match self.db.with_conn(download_repo::next_waiting) {
                 Ok(task) => task,
                 Err(err) => {
-                    log::error!("读取待执行任务失败: {err}");
+                    log::error!("Couldn't read the next waiting task: {err}");
                     return;
                 }
             };
@@ -517,7 +522,9 @@ impl TaskManager {
                     .with_conn(|conn| download_repo::mark_completed(conn, task_id, path, size));
             }
         } else {
-            let message = outcome.error.unwrap_or_else(|| "下载失败".to_string());
+            let message = outcome
+                .error
+                .unwrap_or_else(|| "Download failed".to_string());
             let _ = self
                 .db
                 .with_conn(|conn| download_repo::mark_failed(conn, task_id, &message));
@@ -542,8 +549,8 @@ impl TaskManager {
             .app
             .notification()
             .builder()
-            .title("下载完成")
-            .body(format!("{} 已保存到下载目录", task.title))
+            .title("Download complete")
+            .body(format!("{} is saved to your download folder", task.title))
             .show();
     }
 

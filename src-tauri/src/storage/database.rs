@@ -49,7 +49,7 @@ impl Database {
         let conn = self
             .conn
             .lock()
-            .map_err(|_| AppError::Other("数据库锁被污染".into()))?;
+            .map_err(|_| AppError::Other("The database lock is poisoned".into()))?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS downloads (
@@ -122,7 +122,7 @@ impl Database {
         let conn = self
             .conn
             .lock()
-            .map_err(|_| AppError::Other("数据库锁被污染".into()))?;
+            .map_err(|_| AppError::Other("The database lock is poisoned".into()))?;
         Ok(f(&conn)?)
     }
 }

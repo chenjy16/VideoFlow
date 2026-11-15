@@ -160,27 +160,31 @@ pub struct TaskProgress {
 }
 
 impl CreateDownloadRequest {
-    /// 入参校验：防止路径穿越、非法格式与空字段。
+    /// Validates the payload: no path traversal, illegal formats or empty fields.
     pub fn validate(&self) -> AppResult<()> {
         if self.url.trim().is_empty() {
-            return Err(AppError::InvalidUrl("链接不能为空".into()));
+            return Err(AppError::InvalidUrl("The link can't be empty".into()));
         }
         if self.selector.trim().is_empty() {
-            return Err(AppError::Other("下载格式不能为空".into()));
+            return Err(AppError::Other("The download format can't be empty".into()));
         }
         if !self.output_dir.starts_with('/') {
-            return Err(AppError::OutputDir("下载目录必须是绝对路径".into()));
+            return Err(AppError::OutputDir(
+                "The download folder must be an absolute path".into(),
+            ));
         }
         if self.output_dir.contains("..") {
-            return Err(AppError::OutputDir("下载目录包含非法路径片段".into()));
+            return Err(AppError::OutputDir(
+                "The download folder contains an invalid path segment".into(),
+            ));
         }
         if self.container.contains('/') || self.container.contains("..") {
-            return Err(AppError::Other("容器格式非法".into()));
+            return Err(AppError::Other("Invalid container format".into()));
         }
         if let Some(fmt) = &self.audio_format {
             let allowed = ["mp3", "m4a", "wav", "aac", "opus", "flac"];
             if !allowed.contains(&fmt.as_str()) {
-                return Err(AppError::Other(format!("不支持的音频格式：{fmt}")));
+                return Err(AppError::Other(format!("Unsupported audio format: {fmt}")));
             }
         }
         Ok(())

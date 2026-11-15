@@ -1,20 +1,11 @@
 import { Loader2 } from "lucide-react";
 
+import { t } from "@/i18n";
 import { cn } from "@/lib/format";
 import { isActive } from "@/store/app";
 import type { TaskStatus } from "@/types";
 
-const LABELS: Record<TaskStatus, string> = {
-  waiting: "排队中",
-  extracting: "解析中",
-  downloading: "下载中",
-  merging: "合并中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已取消",
-  interrupted: "已中断",
-};
-
+/** Single source of truth for the user-facing task states. */
 const TONES: Record<TaskStatus, string> = {
   waiting: "border-border bg-muted text-muted-foreground",
   extracting: "border-primary/25 bg-primary/10 text-primary",
@@ -26,22 +17,22 @@ const TONES: Record<TaskStatus, string> = {
   interrupted: "border-warning/30 bg-warning/12 text-warning",
 };
 
-/** 任务状态标签 */
+/** Task state pill. */
 export function StatusBadge({ status, className }: { status: TaskStatus; className?: string }) {
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4",
+        "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-meta font-medium leading-4",
         TONES[status],
         className,
       )}
     >
-      {isActive(status) && <Loader2 className="size-3 animate-spin" />}
-      {LABELS[status]}
+      {isActive(status) && <Loader2 className="size-3 animate-spin" aria-hidden />}
+      {t.status[status]}
     </span>
   );
 }
 
 export function statusLabel(status: TaskStatus): string {
-  return LABELS[status];
+  return t.status[status];
 }

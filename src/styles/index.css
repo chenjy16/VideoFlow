@@ -2,79 +2,94 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* macOS 原生观感的浅/深色主题变量 */
+/*
+ * 设计令牌（Design tokens）
+ *
+ * 所有颜色、字号、尺寸都只在这里定义，组件只消费语义名称，
+ * 不在组件里散落十六进制或任意像素值。
+ * 深色主题在同一套语义名称下重映射，因此新增页面无需额外适配。
+ */
 :root {
-  --radius: 0.75rem;
+  /* 尺寸 */
+  --radius: 10px;
+  --sidebar-width: 232px;
+  --content-max: 920px;
+  /* 顶部为 Overlay 标题栏预留的高度（macOS 红绿灯所在区域） */
+  --titlebar-height: 28px;
+  --control-height: 32px;
 
-  --background: oklch(0.985 0.002 250);
-  --foreground: oklch(0.22 0.015 265);
+  /* 颜色：中性面 */
+  --background: #f7f8fa;
+  --foreground: #20242b;
+  --card: #ffffff;
+  --card-foreground: #20242b;
+  --popover: #ffffff;
+  --popover-foreground: #20242b;
+  --sidebar: #f1f2f5;
+  --sidebar-foreground: #3a4049;
 
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0.015 265);
+  /* 颜色：文本层级 */
+  --text-primary: #20242b;
+  --text-secondary: #747b87;
+  --text-muted: #9aa1ac;
 
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.22 0.015 265);
+  /* 颜色：强调与状态 */
+  --primary: #5865e8;
+  --primary-foreground: #ffffff;
+  --accent: #e9ebf2;
+  --accent-foreground: #20242b;
+  --secondary: #f1f2f5;
+  --secondary-foreground: #3a4049;
+  --muted: #f1f2f5;
+  --muted-foreground: #747b87;
+  --destructive: #d94a4a;
+  --destructive-foreground: #ffffff;
+  --success: #22a06b;
+  --warning: #d99a30;
 
-  --primary: oklch(0.55 0.19 274);
-  --primary-foreground: oklch(0.99 0.005 275);
-
-  --secondary: oklch(0.955 0.005 265);
-  --secondary-foreground: oklch(0.3 0.02 265);
-
-  --muted: oklch(0.955 0.004 265);
-  --muted-foreground: oklch(0.53 0.015 265);
-
-  --accent: oklch(0.95 0.015 275);
-  --accent-foreground: oklch(0.3 0.04 275);
-
-  --destructive: oklch(0.58 0.21 25);
-  --destructive-foreground: oklch(0.99 0 0);
-
-  --success: oklch(0.62 0.15 150);
-  --warning: oklch(0.75 0.15 75);
-
-  --border: oklch(0.9 0.005 265);
-  --input: oklch(0.9 0.005 265);
-  --ring: oklch(0.6 0.15 275);
-
-  --sidebar: oklch(0.965 0.004 260);
-  --sidebar-foreground: oklch(0.28 0.015 265);
+  /* 颜色：描边与焦点 */
+  --border: #e4e7ec;
+  --input: #e4e7ec;
+  --ring: #5865e8;
 }
 
 .dark {
-  --background: oklch(0.19 0.008 265);
-  --foreground: oklch(0.95 0.004 265);
+  --background: #16181c;
+  --foreground: #eceef2;
 
-  --card: oklch(0.235 0.009 265);
-  --card-foreground: oklch(0.95 0.004 265);
+  --card: #1e2127;
+  --card-foreground: #eceef2;
+  --popover: #212429;
+  --popover-foreground: #eceef2;
 
-  --popover: oklch(0.245 0.01 265);
-  --popover-foreground: oklch(0.95 0.004 265);
+  --sidebar: #1a1c21;
+  --sidebar-foreground: #d7dae0;
 
-  --primary: oklch(0.68 0.16 275);
-  --primary-foreground: oklch(0.18 0.02 275);
+  --text-primary: #eceef2;
+  --text-secondary: #a3a9b4;
+  --text-muted: #7c828d;
 
-  --secondary: oklch(0.29 0.012 265);
-  --secondary-foreground: oklch(0.93 0.005 265);
+  --primary: #8b95f2;
+  --primary-foreground: #14161a;
 
-  --muted: oklch(0.28 0.01 265);
-  --muted-foreground: oklch(0.68 0.012 265);
+  --secondary: #262a31;
+  --secondary-foreground: #e3e6ec;
 
-  --accent: oklch(0.32 0.03 275);
-  --accent-foreground: oklch(0.96 0.01 275);
+  --muted: #24272e;
+  --muted-foreground: #a3a9b4;
 
-  --destructive: oklch(0.63 0.2 25);
-  --destructive-foreground: oklch(0.98 0 0);
+  --accent: #2b2f37;
+  --accent-foreground: #eceef2;
 
-  --success: oklch(0.7 0.15 150);
-  --warning: oklch(0.8 0.14 80);
+  --destructive: #e2686a;
+  --destructive-foreground: #14161a;
 
-  --border: oklch(0.31 0.01 265);
-  --input: oklch(0.33 0.012 265);
-  --ring: oklch(0.62 0.14 275);
+  --success: #3fb883;
+  --warning: #e0ab4d;
 
-  --sidebar: oklch(0.215 0.009 265);
-  --sidebar-foreground: oklch(0.9 0.005 265);
+  --border: #2e323a;
+  --input: #343941;
+  --ring: #8b95f2;
 }
 
 @theme inline {
@@ -101,6 +116,24 @@
   --color-ring: var(--ring);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
+  /* 第三级文本：说明、计数、时间戳等极次级信息 */
+  --color-faint: var(--text-muted);
+
+  /* 字号层级：页面标题 / 条目标题 / 区块标题 / 卡片标题 / 正文 / 元信息 / 说明 */
+  --text-page-title: 20px;
+  --text-page-title--line-height: 1.25;
+  --text-item-title: 15px;
+  --text-item-title--line-height: 1.35;
+  --text-section: 11px;
+  --text-section--line-height: 1.3;
+  --text-card-title: 13px;
+  --text-card-title--line-height: 1.4;
+  --text-body: 13px;
+  --text-body--line-height: 1.5;
+  --text-meta: 11px;
+  --text-meta--line-height: 1.45;
+  --text-caption: 10px;
+  --text-caption--line-height: 1.4;
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -108,8 +141,8 @@
   --radius-xl: calc(var(--radius) + 4px);
 
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
 @layer base {
@@ -154,12 +187,20 @@
   }
 }
 
-@utility drag-region {
-  -webkit-app-region: drag;
-}
-
-@utility no-drag {
-  -webkit-app-region: no-drag;
+/*
+ * 窗口拖拽区域
+ *
+ * macOS 上 Tauri 用的是 WKWebView，它不实现 -webkit-app-region（那是 Chromium / Electron 的
+ * 私有属性），所以旧写法根本不会生效，窗口也就拖不动。Tauri 2 支持的做法是给元素加
+ * data-tauri-drag-region，由 Tauri 注入的脚本在 mousedown 时调用 startDragging()。
+ *
+ * 注意：这个属性不会被继承——只有带属性的元素本身能起拖拽，非交互的子元素需要时自己加；
+ * 绝对不要加在应用根节点上，否则按钮、输入框、滚动区都会被拖拽吞掉。
+ */
+[data-tauri-drag-region] {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
 }
 
 @keyframes vf-fade-in {

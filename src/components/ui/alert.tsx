@@ -22,11 +22,11 @@ const TONES: Record<AlertVariant, string> = {
 interface AlertProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: AlertVariant;
   title?: string;
-  /** 允许展示可滚动长文（例如引擎报错） */
+  /** Long engine errors are shown in a scrollable block */
   scrollable?: boolean;
 }
 
-/** 内联提示条：错误 / 成功 / 警告 / 信息 */
+/** Inline banner: error / success / warning / info */
 export function Alert({
   variant = "info",
   title,
@@ -41,7 +41,7 @@ export function Alert({
     <div
       role="alert"
       className={cn(
-        "flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-[13px]",
+        "flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-body",
         TONES[variant],
         className,
       )}
@@ -55,7 +55,7 @@ export function Alert({
             className={cn(
               "leading-relaxed break-words",
               title && "mt-0.5",
-              scrollable && "max-h-40 overflow-auto whitespace-pre-wrap font-mono text-xs",
+              scrollable && "max-h-40 overflow-auto whitespace-pre-wrap font-mono text-meta",
             )}
           >
             {children}

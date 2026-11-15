@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { t } from "@/i18n";
 import type {
   AppSettings,
   CreateDownloadRequest,
@@ -10,8 +11,8 @@ import type {
 } from "@/types";
 
 /**
- * 所有后端调用集中在此，UI 只依赖这些函数，
- * 便于后续替换传输层或做 mock 测试。
+ * Every backend call lives here so the UI only depends on these functions —
+ * the transport can be swapped or mocked without touching components.
  */
 export const api = {
   inspectUrl(url: string): Promise<MediaInfo> {
@@ -83,12 +84,13 @@ export const api = {
   },
 };
 
-/** 把后端返回的错误统一转换成可展示文案 */
+/** Normalizes whatever the backend threw into a single displayable string. */
 export function toErrorMessage(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  if (error instanceof Error && error.message.trim()) return error.message;
   if (error && typeof error === "object" && "message" in error) {
-    return String((error as { message: unknown }).message);
+    const message = String((error as { message: unknown }).message).trim();
+    if (message) return message;
   }
-  return "发生未知错误";
+  return t.common.unknownError;
 }

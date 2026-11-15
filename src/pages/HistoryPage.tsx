@@ -5,17 +5,18 @@ import { EmptyState, ErrorState, LoadingState, PageHeader } from "@/components/c
 import { TaskCard } from "@/components/tasks/TaskCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { t } from "@/i18n";
 import { api, toErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/format";
 import { useAppStore } from "@/store/app";
 import type { DownloadTask, TaskStatus } from "@/types";
 
 const FILTERS: { value: "all" | TaskStatus; label: string }[] = [
-  { value: "all", label: "全部" },
-  { value: "completed", label: "已完成" },
-  { value: "failed", label: "失败" },
-  { value: "interrupted", label: "已中断" },
-  { value: "cancelled", label: "已取消" },
+  { value: "all", label: t.history.all },
+  { value: "completed", label: t.status.completed },
+  { value: "failed", label: t.status.failed },
+  { value: "interrupted", label: t.status.interrupted },
+  { value: "cancelled", label: t.status.cancelled },
 ];
 
 const HISTORY_LIMIT = 200;
@@ -36,7 +37,7 @@ export function HistoryPage() {
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  // 任务状态变化（完成 / 失败 / 删除）后重新拉取历史
+  // Refetch whenever a task changes state (finished / failed / removed).
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -64,8 +65,8 @@ export function HistoryPage() {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
-        title="历史"
-        description="已结束的下载记录。移除记录不会删除已下载的文件。"
+        title={t.history.title}
+        description={t.history.description}
         actions={
           <Button
             variant="ghost"
@@ -74,7 +75,7 @@ export function HistoryPage() {
             disabled={loading}
           >
             <RefreshCw className={loading ? "animate-spin" : undefined} />
-            刷新
+            {t.common.refresh}
           </Button>
         }
       />
@@ -85,15 +86,15 @@ export function HistoryPage() {
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索标题或链接"
+            placeholder={t.history.searchPlaceholder}
             className="pl-9 pr-9"
-            aria-label="搜索历史记录"
+            aria-label={t.history.searchLabel}
           />
           {query && (
             <button
               type="button"
               onClick={() => setQuery("")}
-              aria-label="清空搜索"
+              aria-label={t.history.clearSearch}
               className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               <X className="size-3.5" />
@@ -109,8 +110,9 @@ export function HistoryPage() {
                 key={item.value}
                 type="button"
                 onClick={() => setFilter(item.value)}
+                aria-pressed={active}
                 className={cn(
-                  "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                  "rounded-full border px-2.5 py-1 text-meta font-medium transition-colors",
                   active
                     ? "border-primary/40 bg-primary/10 text-primary"
                     : "border-border bg-card text-muted-foreground hover:bg-accent/60",
@@ -120,21 +122,21 @@ export function HistoryPage() {
               </button>
             );
           })}
-          <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
-            {visible.length} 条记录
+          <span className="ml-auto text-meta tabular-nums text-faint">
+            {t.history.count(visible.length)}
           </span>
         </div>
       </div>
 
       {error && (
         <ErrorState
-          title="历史记录加载失败"
+          title={t.history.loadError}
           message={error}
           action={
             <div>
               <Button variant="outline" size="sm" onClick={() => setReloadKey((key) => key + 1)}>
                 <RefreshCw />
-                重试
+                {t.common.retry}
               </Button>
             </div>
           }
@@ -142,23 +144,19 @@ export function HistoryPage() {
       )}
 
       {loading && items.length === 0 && !error && (
-        <LoadingState rows={4} label="正在读取历史记录…" />
+        <LoadingState rows={4} label={t.history.loading} />
       )}
 
       {!loading && !error && items.length === 0 && (
         <EmptyState
           icon={<History className="size-5" />}
-          title={debounced ? "没有匹配的记录" : "还没有历史记录"}
-          description={
-            debounced
-              ? "试试其他关键词，或清空搜索条件。"
-              : "完成、失败或取消的下载都会自动归档到这里。"
-          }
+          title={debounced ? t.history.empty.searchTitle : t.history.empty.title}
+          description={debounced ? t.history.empty.searchDescription : t.history.empty.description}
         />
       )}
 
       {!error && items.length > 0 && visible.length === 0 && (
-        <EmptyState title="该筛选条件下没有记录" description="切换其他状态查看。" />
+        <EmptyState title={t.history.noMatch.title} description={t.history.noMatch.description} />
       )}
 
       {visible.length > 0 && (

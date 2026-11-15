@@ -6,7 +6,7 @@ import "@/styles/index.css";
 
 const container = document.getElementById("root");
 if (!container) {
-  throw new Error("缺少 #root 挂载节点");
+  throw new Error("Missing the #root mount node");
 }
 
 ReactDOM.createRoot(container).render(

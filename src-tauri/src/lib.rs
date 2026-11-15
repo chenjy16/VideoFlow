@@ -53,12 +53,12 @@ pub fn run() {
             let settings = match settings_repo::load(&db, &default_dir_str) {
                 Ok(settings) => settings,
                 Err(err) => {
-                    log::error!("读取设置失败，使用默认值: {err}");
+                    log::error!("Couldn't read settings, falling back to defaults: {err}");
                     AppSettings::defaults(default_dir_str)
                 }
             };
 
-            // 引擎探测是异步的（要跑 --version），在主线程同步等待一次即可
+            // Engine detection is async (it runs --version), so block once on the main thread
             let engines = tauri::async_runtime::block_on(Engines::detect());
             match &engines.yt_dlp {
                 Some(path) => log::info!(
@@ -66,7 +66,7 @@ pub fn run() {
                     path.display(),
                     engines.yt_dlp_version.as_deref().unwrap_or("unknown")
                 ),
-                None => log::warn!("未找到 yt-dlp，下载功能不可用"),
+                None => log::warn!("yt-dlp not found, downloads are unavailable"),
             }
             match &engines.ffmpeg {
                 Some(path) => log::info!(
@@ -74,7 +74,9 @@ pub fn run() {
                     path.display(),
                     engines.ffmpeg_version.as_deref().unwrap_or("unknown")
                 ),
-                None => log::warn!("未找到 FFmpeg，合并与音频提取不可用"),
+                None => {
+                    log::warn!("FFmpeg not found, merging and audio extraction are unavailable")
+                }
             }
             match &engines.ffprobe {
                 Some(path) => log::info!(
@@ -82,12 +84,12 @@ pub fn run() {
                     path.display(),
                     engines.ffprobe_version.as_deref().unwrap_or("unknown")
                 ),
-                None => log::warn!("未找到 FFprobe，音频格式转换不可用"),
+                None => log::warn!("FFprobe not found, audio conversion is unavailable"),
             }
 
             let manager = TaskManager::new(handle, db, engines, settings, cache_dir);
             if let Err(err) = manager.recover() {
-                log::error!("恢复任务状态失败: {err}");
+                log::error!("Couldn't recover task state: {err}");
             }
 
             app.manage(AppState::new(manager));
@@ -96,7 +98,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 if let Some(state) = window.try_state::<AppState>() {
-                    // 退出前取消运行中的任务，避免留下孤儿进程
+                    // Cancel running tasks before quitting, so no orphan processes are left behind
                     state.manager.shutdown();
                 }
             }
@@ -121,5 +123,5 @@ pub fn run() {
             commands::system::reveal_licenses,
         ])
         .run(tauri::generate_context!())
-        .expect("VideoFlow 启动失败");
+        .expect("VideoFlow failed to start");
 }
