@@ -146,8 +146,9 @@ built   : $(date -u +%Y-%m-%dT%H:%M:%SZ)
 signing : ${SIGNING_MODE}
 notarize: ${NOTARIZATION_STATUS}
 
-本包仅用于内部安装与运行验证，不是正式发布产物，禁止对外分发。
-未经 Developer ID 签名与 Apple 公证，Gatekeeper 会拦截。
+This build is for internal installation and runtime verification only. It is not a
+release artifact and must not be distributed externally.
+It has no Developer ID signature and was not notarized by Apple; Gatekeeper will block it.
 EOF
   if embed_dmg_notice "${OUT_DIR}/${DMG_NAME}" "INTERNAL_TEST_BUILD.txt" "${OUT_DIR}/INTERNAL_TEST_BUILD.txt"; then
     dmg_inner_marker=true
@@ -165,14 +166,16 @@ TEST RELEASE - UNSIGNED - NOT NOTARIZED
 product : ${PRODUCT}
 version : ${VERSION}
 commit  : ${COMMIT_SHA}
-tag     : ${TAG:-（非 tag 构建）}
+tag     : ${TAG:-(not a tag build)}
 built   : $(date -u +%Y-%m-%dT%H:%M:%SZ)
-signing : unsigned（无 Developer ID 签名）
-notarize: NOT_NOTARIZED（未提交 Apple 公证，无票据）
+signing : unsigned (no Developer ID signature)
+notarize: NOT_NOTARIZED (not submitted to Apple, no ticket)
 
-这是一个测试发行版：没有 Developer ID 签名，也没有经过 Apple 公证。
-macOS Gatekeeper 可能阻止打开或提示无法验证开发者；请在确认来源可信后自行决定是否打开。
-该包不构成 Apple 公证或 Gatekeeper 完整验收的证明，也不是正式稳定版。
+This is a test release: it has no Developer ID signature and was not notarized by Apple.
+macOS Gatekeeper may block it or warn that the developer cannot be verified; open it only
+after confirming the download came from a trusted source.
+This build is not proof of Apple notarization or full Gatekeeper acceptance, and it is not
+a stable release.
 EOF
   if embed_dmg_notice "${OUT_DIR}/${DMG_NAME}" "TEST_RELEASE.txt" "${OUT_DIR}/TEST_RELEASE.txt"; then
     dmg_inner_marker=true

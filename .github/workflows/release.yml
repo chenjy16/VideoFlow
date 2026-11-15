@@ -603,33 +603,35 @@ jobs:
             cat > RELEASE_NOTES.md <<EOF
           VideoFlow ${TAG_NAME} - Test Release
 
-          macOS ARM64 测试发行版：**未签名、未公证（UNSIGNED / NOT NOTARIZED）**。
+          macOS ARM64 test build: **unsigned and not notarized (UNSIGNED / NOT NOTARIZED)**.
 
-          安装：下载 DMG 并双击挂载，把 VideoFlow.app 拖入「应用程序」。需 macOS 11.0 或更高版本（Apple Silicon）。
+          Install: download the DMG, open it, and drag VideoFlow.app into Applications.
+          Requires macOS 11.0 or later (Apple Silicon).
 
-          ## 重要提示
+          ## Important
 
-          - 该包没有 Developer ID 签名，也没有经过 Apple 公证，Gatekeeper 可能阻止打开或提示无法验证开发者。
-          - 请在确认文件来源可信后自行处理：系统设置 → 隐私与安全性 → 仍要打开；或对 App 执行 xattr -dr com.apple.quarantine 再去隔离后打开。
-          - 本项目不声称该包已通过 Apple 公证或 Gatekeeper 完整验收；它是可安装、可运行的测试版本，不是正式稳定版。
+          - This build has no Developer ID signature and was not notarized by Apple. Gatekeeper may block it or warn that the developer cannot be verified.
+          - After confirming the download comes from a trusted source, open it via System Settings -> Privacy & Security -> Open Anyway, or clear the quarantine flag: `xattr -dr com.apple.quarantine /Applications/VideoFlow.app`
+          - This project does not claim that this build passed Apple notarization or full Gatekeeper acceptance. It is an installable, runnable test build, not a stable release.
 
-          ## 内容
+          ## Contents
 
-          - 内置 yt-dlp / ffmpeg / ffprobe（FFmpeg 为 LGPL 静态构建）
-          - 校验和见 SHA256SUMS；元数据见 release-manifest.json（build_kind=test-release）
-          - 许可证与源码获取方式见 THIRD_PARTY_LICENSES.md / SOURCE_OFFER.txt
+          - Bundled yt-dlp / ffmpeg / ffprobe (FFmpeg is a static LGPL build)
+          - Checksums in SHA256SUMS; metadata in release-manifest.json (build_kind=test-release)
+          - Licenses and source availability: THIRD_PARTY_LICENSES.md / SOURCE_OFFER.txt
           EOF
           else
             cat > RELEASE_NOTES.md <<EOF
           VideoFlow ${TAG_NAME}
 
-          安装：下载 DMG，拖入「应用程序」。需 macOS 11.0 或更高版本（Apple Silicon）。
+          Install: download the DMG and drag VideoFlow.app into Applications.
+          Requires macOS 11.0 or later (Apple Silicon).
 
-          - 已用 Developer ID 签名，并通过 Apple 公证（staple 已完成）
-          - 内置 yt-dlp / ffmpeg / ffprobe（FFmpeg 为 LGPL 静态构建）
-          - 校验和见 SHA256SUMS；完整元数据见 release-manifest.json
+          - Signed with a Developer ID and notarized by Apple (stapled)
+          - Bundled yt-dlp / ffmpeg / ffprobe (FFmpeg is a static LGPL build)
+          - Checksums in SHA256SUMS; full metadata in release-manifest.json
 
-          许可证与源码获取方式见 THIRD_PARTY_LICENSES.md / SOURCE_OFFER.txt。
+          Licenses and source availability: THIRD_PARTY_LICENSES.md / SOURCE_OFFER.txt.
           EOF
           fi
           cat RELEASE_NOTES.md
