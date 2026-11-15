@@ -76,59 +76,59 @@ Team ID 与 VideoFlow 不同；开启 Hardened Runtime 后，library validation 
 
 ---
 
-## 3. 公证：当前 BLOCKED
+## 3. 公证：流程已落地，凭据未配置（BLOCKED）
 
-### 3.1 阻塞原因
+### 3.1 现状
 
-构建环境没有以下任意一组凭据：
+公证流程已实现在 `scripts/notarize.sh`，并且 `release.yml` 的 `REQUIRE_NOTARIZATION` 恒为 `true`。
+当前仓库未配置凭据，因此每一次发布构建都会在公证步骤停下，状态记为 **`BLOCKED`**，不产出正式 Release。
+这是设计行为，不是“公证成功”。本文档不声称已经完成过公证。
 
-- Apple ID 路线：`APPLE_ID`、`APPLE_PASSWORD`（app-specific password）、`APPLE_TEAM_ID`；
-- API Key 路线：`APPLE_API_KEY`、`APPLE_API_ISSUER`、`APPLE_API_KEY_PATH`。
+### 3.2 凭据来源：只支持 App Store Connect **Team** API Key
 
-`notarytool` 也没有可用的 keychain profile。因此**没有执行** `notarytool submit`，也**没有**装订票据。
-本文档不声称已完成公证。
+本项目只接受 Team API Key，不使用 Apple ID + app-specific password：
 
-### 3.2 凭据就绪后的操作（模板）
+| 变量 | 含义 |
+| --- | --- |
+| `APPLE_API_KEY` | Key ID（10 位以上字母数字） |
+| `APPLE_API_ISSUER` | Issuer ID（UUID） |
+| `APPLE_API_KEY_PATH` / `APPLE_API_KEY_P8_BASE64` | `.p8` 私钥路径，或私钥的 base64（CI 用后者） |
 
-路线 A：Apple ID + app-specific password
+`notarytool` 的 `--issuer` 是 Team Key 的必填参数、Individual Key 不需要，脚本恒传 `--issuer`，
+因此 Individual Key 在协议层就无法通过。
 
-```bash
-export APPLE_ID="<apple-id>"
-export APPLE_PASSWORD="<app-specific-password>"
-export APPLE_TEAM_ID="HQC33J8U5Y"
-pnpm tauri build --target aarch64-apple-darwin     # Tauri 会自动 submit + staple
-```
-
-路线 B：App Store Connect API Key（CI 推荐）
+### 3.3 本地手工执行
 
 ```bash
 export APPLE_API_KEY="<key-id>"
 export APPLE_API_ISSUER="<issuer-uuid>"
 export APPLE_API_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_<key-id>.p8"
-pnpm tauri build --target aarch64-apple-darwin
+export REQUIRE_NOTARIZATION=true
+pnpm tauri build --target aarch64-apple-darwin   # 注意：不要给 bundler 传 APPLE_API_* 变量
+./scripts/notarize.sh                            # submit → 取 Apple 状态 → staple → validate
 ```
 
-手工补做（若构建时未自动公证）：
+> Tauri bundler 在检测到 `APPLE_API_KEY` / `APPLE_API_ISSUER` / `APPLE_API_KEY_PATH` 时会自行公证，
+> 那样 Apple 的返回会被吞在 bundler 内部。本项目刻意不这样做：公证只由 `notarize.sh` 执行，
+> 以便把 submission ID、真实状态、失败日志全部落盘。
 
-```bash
-xcrun notarytool submit "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/VideoFlow_0.1.0_aarch64.dmg" \
-  --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-xcrun stapler staple "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/VideoFlow.app"
-xcrun stapler staple "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/VideoFlow_0.1.0_aarch64.dmg"
-```
-
-### 3.3 公证后的验收清单
+### 3.4 公证后的验收清单
 
 | 命令 | 期望 |
 | --- | --- |
 | `codesign --verify --deep --strict --verbose=2 VideoFlow.app` | `valid on disk`、`satisfies its Designated Requirement` |
 | `xcrun stapler validate VideoFlow.app` | `The validate action worked!` |
+| `xcrun stapler validate VideoFlow_0.1.0_aarch64.dmg` | `The validate action worked!` |
 | `spctl -a -vvv -t exec VideoFlow.app` | `accepted` / `source=Notarized Developer ID` |
 | `spctl -a -vvv -t install VideoFlow_0.1.0_aarch64.dmg` | `accepted` |
 | 干净机器（或新用户）双击打开 | 无“无法验证开发者”拦截 |
 
 > 注意：公证产物与签名强绑定。任何一次重新构建、替换 sidecar（例如用户按 LGPL 要求替换 `ffmpeg`）
 > 之后都必须重新签名，替换 ffmpeg 不会使 `yt-dlp` 的 entitlement 失效，但会让 app 签名失效，需要重签整个 app。
+
+> 已知结构限制：DMG 由 Tauri 在公证之前生成，因此 DMG 内部的那份 `.app` 没有独立票据；
+> 票据装在 `.dmg` 与 `bundle/macos` 下打包进 `.app.zip` 的那份 `.app` 上。
+> 从 DMG 安装的应用依赖 DMG 自身票据 + Gatekeeper 在线核验（Apple 对仅公证 DMG 的标准行为）。
 
 ---
 
@@ -229,3 +229,89 @@ CI 的签名模式完全由 Secrets 推导，**不做隐式降级**。
 | `package-release.sh` 签名字段取自产物 | **PASS** | manifest 输出 identity / team_id / dmg_signed |
 | **CI 上使用真实 Developer ID 证书从零签名** | **NOT TESTED** | 需先配置三个 Secrets；本轮未配置，故未跑过 |
 
+---
+
+## 7. CI 公证接入（Phase 4）
+
+### 7.1 需要配置的 Secrets（App Store Connect **Team** API Key）
+
+| Secret | 内容 | 取得方式 |
+| --- | --- | --- |
+| `APPLE_API_KEY` | Key ID | App Store Connect → 用户和访问 → 集成 → App Store Connect API → 生成密钥（访问权限选 **App Manager** 或更高） |
+| `APPLE_API_ISSUER` | Issuer ID（UUID） | 同页顶部的 Issuer ID |
+| `APPLE_API_KEY_P8_BASE64` | `.p8` 文件内容的 base64 | `base64 -i AuthKey_XXXXXXXXXX.p8 \| tr -d '\n' \| pbcopy` |
+
+要点：
+
+- 必须是 **Team Key**。Individual Key 没有 Issuer，而脚本恒传 `--issuer`，会直接被 Apple 拒绝。
+- `.p8` 只能下载一次，丢失只能重新生成（旧 Key 需吊销）。
+- base64 只是编码，不是加密：不要把它写进任何文件、文档或 Issue。
+
+### 7.2 行为矩阵
+
+| 签名 Secrets | 公证 Secrets | 触发 | 结果 |
+| --- | --- | --- | --- |
+| 3/3 | 3/3 | tag / dispatch | 正常签名 → 公证 → 发布（tag） |
+| 3/3 | 0/3 | dispatch | `BLOCKED`，构建失败，不发布 |
+| 3/3 | 0/3 | tag | validate 阶段直接失败（tag 必须可公证） |
+| 任意 | 1~2/3 | 任意 | 立即失败（不允许半配置） |
+| 0/3 | 任意 | tag | 立即失败（未签名不得发布） |
+
+### 7.3 流水线顺序（`release.yml` 的 build job）
+
+```
+导入 Developer ID 证书 → 构建（bundler 不公证）→ 清理 keychain
+  → notarize.sh（submit → 真实 status → 仅 Accepted 才 staple → validate）
+  → 清理临时私钥 → verify-release.sh（含票据硬断言）
+  → package-release.sh（staple 之后才生成 SHA256SUMS）
+  → 上传产物
+  → release job（tag 且全部通过）：SHA256SUMS 复核 → 清单复核 → 票据复验 → 拒绝覆盖 → gh release create
+```
+
+关键点：**SHA256SUMS 必须覆盖带票据的最终制品**，所以打包发生在 staple 之后。
+
+### 7.4 私钥生命周期
+
+| 阶段 | 位置 | 约束 |
+| --- | --- | --- |
+| 传入 | `secrets.APPLE_API_KEY_P8_BASE64` | 仅注入到公证步骤的 `env` |
+| 落盘 | `$RUNNER_TEMP/AuthKey_<KEYID>.p8` | `umask 077` + `chmod 600` |
+| 使用 | `notarytool submit/log` 的 `--key` 参数 | 只传路径，不传内容，不进日志 |
+| 清理 | `trap` + 独立 `always()` 步骤 | 先 `dd` 覆写再 `rm`，并断言无残留 |
+
+私钥**不会**进入：仓库、`dist-release`、Artifact、Release 资产、Step Summary、日志。
+认证只传路径与 Key ID，`APPLE_API_*` 不会出现在命令行参数里。
+
+### 7.5 新增硬门禁
+
+`verify-release.sh`（`REQUIRE_NOTARIZATION=true` 时）：
+
+| 断言 | 防的是什么 |
+| --- | --- |
+| `stapler validate`（`.dmg`） | 用户下载的 DMG 真有票据 |
+| `stapler validate`（`.app`） | 打进 `.app.zip` 的包真有票据 |
+| `NOTARIZATION_STATUS == ACCEPTED` | 状态必须来自 Apple 返回 |
+| `spctl` 返回 `accepted` | Gatekeeper 实际放行 |
+
+`package-release.sh`：`stapler validate` 复验**复制后**的 DMG，无票据且 `REQUIRE_NOTARIZATION=true` 时直接失败；
+manifest 的 `ticket_stapled` 由实测得出，不信环境变量。
+
+`release` job：`shasum -c SHA256SUMS`、manifest 的 version/tag/公证状态/票据、再跑一次 `stapler validate`、
+并拒绝覆盖已存在的同名 Release。
+
+### 7.6 当前验证状态
+
+| 环节 | 状态 | 证据 |
+| --- | --- | --- |
+| 无凭据 → `BLOCKED`（exit 1，报告/GITHUB_ENV/Summary 三处一致） | **PASS** | 本地实跑 |
+| `REQUIRE_NOTARIZATION=false` → `NOT_NOTARIZED`（不阻断） | **PASS** | 本地实跑 |
+| 半配置凭据 / Issuer 非 UUID / Key ID 格式错 / `.p8` 非法 | **PASS** | 4 类负例均 `FAILED` 且落盘 |
+| 真实调用 Apple（伪造凭据） | **PASS** | Apple 返回 `HTTP 401 Unauthenticated`，脚本记为 `FAILED`，未伪造成功 |
+| 私钥不泄漏 | **PASS** | 报告与日志均不含 base64；进程退出后文件已删除 |
+| 公证门禁（无票据时 3 项 FAIL） | **PASS** | 真实已签名 DMG：42 项中 3 项失败，均属公证项 |
+| 门禁无法用标签绕过 | **PASS** | 伪造 `NOTARIZATION_STATUS=ACCEPTED` 仍被票据断言拦住 |
+| `package-release.sh` 无票据拒绝打包 | **PASS** | 报“复制后的 DMG 丢失公证票据，不得发布” |
+| workflow 全部 `run` 块语法 | **PASS** | 45 个 run 块 `bash -n` 全通过 |
+| **真实凭据下的完整公证（Accepted → staple → 发布）** | **NOT TESTED** | 仓库无凭据；尚未真实跑过 |
+| **`stapler staple` 对 DMG 内 `.app` 副本的行为** | **NOT TESTED** | 见 3.4 的结构限制说明 |
+| **`release` job 真实创建 Release** | **NOT TESTED** | 需在 tag + 公证通过后才会执行 |

@@ -10,6 +10,7 @@
 #   SIGNING_MODE          unsigned | developer-id
 #   ALLOW_UNSIGNED        未签名时是否放行（内部测试 Artifact 用 1，正式发布必须为 0）
 #   REQUIRE_NOTARIZATION  默认 false；为 true 时必须 stapler validate 通过
+#   NOTARIZATION_STATUS   由 notarize.sh 从 Apple 返回的 JSON 写入；为 true 时必须为 ACCEPTED
 #   EXPECTED_SIGNING_IDENTITY  developer-id 模式下期望的签名身份全名（由 import-signing-certificate.sh 回填）
 #   EXPECTED_TEAM_ID           developer-id 模式下期望的 Team ID（同上）
 #   EXPECTED_VERSION      若设置则校验 CFBundleShortVersionString
@@ -22,6 +23,7 @@ BUNDLE_DIR="${BUNDLE_DIR:-${REPO_ROOT}/src-tauri/target/${TRIPLE}/release/bundle
 SIGNING_MODE="${SIGNING_MODE:-unsigned}"
 ALLOW_UNSIGNED="${ALLOW_UNSIGNED:-0}"
 REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION:-false}"
+NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-}"
 EXPECTED_SIGNING_IDENTITY="${EXPECTED_SIGNING_IDENTITY:-}"
 EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-}"
 EXPECTED_VERSION="${EXPECTED_VERSION:-}"
@@ -299,10 +301,10 @@ else
   info "签名状态: NOT_SIGNED"
 fi
 
-# Gatekeeper 评估只记录，不判失败：
+# Gatekeeper 评估只记录，具体判定放在第 4 节：
 #   * unsigned            → 必然 rejected
-#   * developer-id 未公证 → rejected source=Unnotarized Developer ID（本轮预期）
-# 完成 Apple Notarization 后这里应变为 accepted / source=Notarized Developer ID。
+#   * developer-id 未公证 → rejected source=Unnotarized Developer ID
+#   * 已公证 + 已 staple   → accepted source=Notarized Developer ID
 spctl_out="$(spctl --assess --type execute --verbose=4 "$APP" 2>&1 | tr '\n' ' ')"
 info "spctl: ${spctl_out}"
 if [ "$SIGNING_MODE" = "developer-id" ] && [ "$REQUIRE_NOTARIZATION" != "true" ] \
@@ -311,16 +313,39 @@ if [ "$SIGNING_MODE" = "developer-id" ] && [ "$REQUIRE_NOTARIZATION" != "true" ]
 fi
 
 # ---------------------------------------------------------------------------
-# 4. 公证状态
+# 4. 公证状态（数据来源必须是 Apple 的真实返回，不接受任何硬编码）
 # ---------------------------------------------------------------------------
 if [ "$REQUIRE_NOTARIZATION" = "true" ]; then
+  # 用户下载的 DMG 必须带装订票据
   if xcrun stapler validate "$DMG" >/dev/null 2>&1; then
-    pass "公证票据已装订（stapler validate）"
+    pass "公证票据已装订（stapler validate，.dmg）"
   else
-    fail "REQUIRE_NOTARIZATION=true 但 stapler validate 未通过"
+    fail "REQUIRE_NOTARIZATION=true 但 stapler validate 未通过（.dmg）"
+  fi
+  # 打进 .app.zip 的应用包同样必须有票据
+  BUNDLE_APP="${BUNDLE_DIR}/macos/${PRODUCT}.app"
+  if [ -d "$BUNDLE_APP" ]; then
+    if xcrun stapler validate "$BUNDLE_APP" >/dev/null 2>&1; then
+      pass "公证票据已装订（stapler validate，.app）"
+    else
+      fail "REQUIRE_NOTARIZATION=true 但 stapler validate 未通过（.app）"
+    fi
+  else
+    info "未找到 ${BUNDLE_APP}，跳过 .app 票据校验"
+  fi
+  # 状态必须等于 notarize.sh 从 notarytool 输出里取到的值
+  case "$NOTARIZATION_STATUS" in
+    ACCEPTED) pass "公证状态取自 Apple 返回：ACCEPTED" ;;
+    "") info "未提供 NOTARIZATION_STATUS，跳过状态一致性校验" ;;
+    *) fail "公证状态为 ${NOTARIZATION_STATUS}，不是 Apple 返回的 ACCEPTED" ;;
+  esac
+  if printf '%s' "$spctl_out" | grep -q ': accepted'; then
+    pass "Gatekeeper 评估通过（spctl accepted）"
+  else
+    fail "REQUIRE_NOTARIZATION=true 但 spctl 未返回 accepted：${spctl_out}"
   fi
 else
-  info "公证状态: NOT_NOTARIZED（本阶段未启用 Apple Notarization）"
+  info "公证状态: NOT_NOTARIZED（未启用 Apple Notarization）"
 fi
 
 # ---------------------------------------------------------------------------
@@ -332,6 +357,7 @@ fi
   echo "目标    : ${TRIPLE}"
   echo "签名    : ${SIGNING_MODE}"
   echo "公证    : $( [ "$REQUIRE_NOTARIZATION" = "true" ] && echo REQUIRED || echo NOT_NOTARIZED )"
+  echo "公证状态: ${NOTARIZATION_STATUS:-NOT_NOTARIZED}"
   echo
   echo "${REPORT}"
 } > "$REPORT_PATH" 2>/dev/null || true

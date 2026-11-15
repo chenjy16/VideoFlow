@@ -6,6 +6,9 @@ node_modules/
 dist/
 dist-release/
 verification-report.txt
+# 公证产物（Apple 返回的状态与日志，由 notarize.sh 生成，不入库）
+notarization-report.json
+notarization-logs/
 src-tauri/target/
 src-tauri/gen/
 

@@ -1,16 +1,22 @@
 name: Release
 
-# 发布流水线（Phase 3：Developer ID 签名，未公证）
+# 发布流水线（Phase 4：Developer ID 签名 + Apple 公证 + 正式 Release）
 #
-# 签名模式只由 Secrets 决定，不做隐式降级：
-#   * APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY 三者齐备 → developer-id
-#   * 三者全空                                                                     → unsigned（仅内部 Artifact）
-#   * 只配置了一部分                                                               → 立即失败
-#   * tag(v*) 触发且未配置签名 Secrets                                             → 立即失败（正式 Release 不接受未签名产物）
+# 三道门，任何一道不通过都不产出正式 Release：
+#   1. 签名模式只由 Secrets 决定，不做隐式降级
+#      * APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY 齐备 → developer-id
+#      * 三者全空                                                                    → unsigned（内部 Artifact）
+#      * 只配置了一部分                                                              → 立即失败
+#   2. 公证只认 Apple 的返回：notarytool submit 的 status 必须为 Accepted 才 staple
+#      * APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_P8_BASE64 齐备 → 提交公证
+#      * 只配置了一部分                                                  → 立即失败
+#      * 全空 → 状态记为 BLOCKED，构建失败，不发布（REQUIRE_NOTARIZATION=true）
+#   3. 只有 staple / validate / 完整性检查全部通过，release job 才创建 GitHub Release
+#      * release job 是唯一持有 contents: write 的 job
+#      * 已存在的同名 Release 不会被覆盖
 #
-# 本阶段刻意不做的事：
-#   * 不创建 GitHub Release（Phase 4）
-#   * 不执行 Apple Notarization（本轮要求，保留 REQUIRE_NOTARIZATION 开关）
+# 本项目只使用 App Store Connect **Team** API Key（notarytool 必须带 --issuer），
+# 不使用 Apple ID + App-specific Password 路线。私钥仅存在于 $RUNNER_TEMP，用完即删。
 
 on:
   push:
@@ -19,11 +25,11 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 只构建与校验，不发布（Phase 2 恒为 true 语义）
+        description: 只构建与校验，不创建 Release
         type: boolean
         default: true
 
-# 最小权限：整个工作流只读。Phase 4 的发布 job 才会单独申请 contents: write。
+# 最小权限：整个工作流只读，发布 job 单独申请 contents: write
 permissions:
   contents: read
 
@@ -34,10 +40,8 @@ concurrency:
 env:
   TRIPLE: aarch64-apple-darwin
   CARGO_TERM_COLOR: always
-  # 本轮不实施 Apple Notarization：状态固定为 NOT_NOTARIZED，且不作为阻断条件。
-  # 未来启用时把 REQUIRE_NOTARIZATION 改为 true 并配置 Apple ID 凭据即可。
-  REQUIRE_NOTARIZATION: "false"
-  NOTARIZATION_STATUS: NOT_NOTARIZED
+  # Phase 4：发布必须公证。缺凭据时 notarize.sh 记为 BLOCKED 并失败，不会放行未公证产物。
+  REQUIRE_NOTARIZATION: "true"
 
 jobs:
   validate:
@@ -47,6 +51,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       signing_mode: ${{ steps.signing.outputs.mode }}
+      notarization_ready: ${{ steps.notarize_creds.outputs.ready }}
     steps:
       - name: 校验 Runner 架构（arm64）
         run: |
@@ -124,6 +129,44 @@ jobs:
             echo "signing_ready=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: 判定公证凭据（Team API Key，严格：齐备或全空）
+        id: notarize_creds
+        env:
+          # 只判断是否存在长度，绝不回显内容
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          # Phase 4 的发布语义是"必须公证"；关掉它会让产物名与实际状态不符
+          if [ "${REQUIRE_NOTARIZATION}" != "true" ]; then
+            echo "::error::REQUIRE_NOTARIZATION 必须为 true（Phase 4 起未公证产物不得发布）"
+            exit 1
+          fi
+
+          have=0
+          if [ -n "${APPLE_API_KEY}" ]; then have=$((have + 1)); fi
+          if [ -n "${APPLE_API_ISSUER}" ]; then have=$((have + 1)); fi
+          if [ -n "${APPLE_API_KEY_P8_BASE64}" ]; then have=$((have + 1)); fi
+
+          if [ "$have" -eq 3 ]; then
+            ready=true
+            echo "检测到完整的公证凭据（3/3，Team API Key）"
+          elif [ "$have" -eq 0 ]; then
+            ready=false
+            echo "未配置公证凭据（0/3）：本轮将记为 BLOCKED，不发布"
+          else
+            echo "::error::公证凭据只配置了 ${have}/3：APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_P8_BASE64 必须全部配置或全部留空，发布中止"
+            exit 1
+          fi
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "$ready" = "false" ]; then
+            echo "::error::这是 tag 触发的发布构建，但没有公证凭据；未公证产物不能作为正式 Release。请配置三个 App Store Connect Team API Key Secrets"
+            exit 1
+          fi
+
+          echo "ready=${ready}" >> "$GITHUB_OUTPUT"
+
       - name: 发布条件汇总
         run: |
           {
@@ -135,9 +178,9 @@ jobs:
             echo "| 目标 | aarch64-apple-darwin |"
             echo "| 签名 Secrets | $([ "${{ steps.signing.outputs.mode }}" = "developer-id" ] && echo "3/3 已配置" || echo "未配置") |"
             echo "| 本次签名模式 | ${{ steps.signing.outputs.mode }} |"
-            echo "| 公证状态 | ${NOTARIZATION_STATUS} |"
+            echo "| 公证凭据（Team API Key） | $([ "${{ steps.notarize_creds.outputs.ready }}" = "true" ] && echo "3/3 已配置" || echo "未配置 → 预期 BLOCKED") |"
             echo "| REQUIRE_NOTARIZATION | ${REQUIRE_NOTARIZATION} |"
-            echo "| GitHub Release | 不创建（Phase 4 接入） |"
+            echo "| GitHub Release | $([ "${GITHUB_REF_TYPE}" = "tag" ] && echo "全部检查通过后创建" || echo "不创建（非 tag）") |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   ffmpeg:
@@ -146,12 +189,12 @@ jobs:
     uses: ./.github/workflows/ffmpeg-lgpl.yml
 
   build:
-    name: 构建 / 校验 / 打包（签名模式由 Secrets 决定）
+    name: 构建 / 签名 / 公证 / 校验 / 打包
     needs: [validate, ffmpeg]
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
-      # 签名模式完全由 validate 判定，build 不做任何降级判断
+      # 签名与公证模式完全由 validate 判定，build 不做任何降级判断
       SIGNING_MODE: ${{ needs.validate.outputs.signing_mode }}
       ALLOW_UNSIGNED: ${{ needs.validate.outputs.signing_mode == 'unsigned' && '1' || '0' }}
       VERSION: ${{ needs.validate.outputs.version }}
@@ -227,7 +270,8 @@ jobs:
         run: ./scripts/import-signing-certificate.sh
 
       # 证书已在 keychain 内，后续只靠 GITHUB_ENV 里的 APPLE_SIGNING_IDENTITY 触签名；
-      # 不再向 bundler 传 APPLE_CERTIFICATE，避免 Tauri 重复导入证书。
+      # 不向 bundler 传任何 APPLE_API_* ，公证完全由下面的 notarize.sh 接管，
+      # 这样 Apple 的返回才能被完整记录下来（而不是 bundler 内部静默处理）。
       - name: 构建安装包（签名模式：${{ needs.validate.outputs.signing_mode }}）
         run: pnpm tauri build --target aarch64-apple-darwin
 
@@ -236,7 +280,28 @@ jobs:
         if: always() && needs.validate.outputs.signing_mode == 'developer-id'
         run: ./scripts/import-signing-certificate.sh --cleanup
 
-      - name: 校验安装包（架构 / 引擎 / 许可证 / 签名状态）
+      # 公证：私钥解码到 $RUNNER_TEMP，提交后立刻删除；状态取自 Apple 返回的 JSON。
+      # 凭据缺失 → BLOCKED 并失败（绝不跳过公证继续发布）。
+      - name: Apple 公证（notarytool submit + staple + validate）
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: ./scripts/notarize.sh
+
+      - name: 确保临时私钥已清除
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "${RUNNER_TEMP}"/AuthKey_*.p8 2>/dev/null || true
+          if ls "${RUNNER_TEMP}"/AuthKey_*.p8 >/dev/null 2>&1; then
+            echo "::error::临时私钥未清除，中止"
+            exit 1
+          fi
+          echo "临时私钥已确认清除"
+
+      - name: 校验安装包（架构 / 引擎 / 许可证 / 签名 / 公证）
         run: |
           set -euo pipefail
           # developer-id 模式下由导入步骤回填期望值，这里强制断言签名身份与 Team ID
@@ -245,6 +310,7 @@ jobs:
             ./scripts/verify-release.sh
           cat verification-report.txt >> "$GITHUB_STEP_SUMMARY"
 
+      # 必须在 staple 之后执行：SHA256SUMS 要覆盖带票据的最终制品
       - name: 整理发布产物与校验和
         run: |
           set -euo pipefail
@@ -255,24 +321,39 @@ jobs:
           COMMIT_SHA="${GITHUB_SHA}" \
           TRIPLE="${TRIPLE}" \
           SIGNING_MODE="${SIGNING_MODE}" \
-          NOTARIZATION_STATUS="${NOTARIZATION_STATUS}" \
+          NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-BLOCKED}" \
+          NOTARIZATION_SUBMISSION_ID="${NOTARIZATION_SUBMISSION_ID:-}" \
           REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION}" \
             ./scripts/package-release.sh
 
-      - name: 上传发布候选产物（不创建 Release）
+      - name: 上传发布候选产物
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: videoflow-${{ needs.validate.outputs.signing_mode == 'developer-id' && 'signed-unnotarized' || 'internal-unsigned' }}-${{ needs.validate.outputs.version }}
+          # 产物名即承诺：developer-id 分支只能在 Apple 返回 Accepted 后走到这里
+          name: videoflow-${{ needs.validate.outputs.signing_mode == 'developer-id' && 'signed-notarized' || 'internal-unsigned' }}-${{ needs.validate.outputs.version }}
           path: |
             dist-release
             verification-report.txt
+            notarization-report.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+
+      # 即使公证失败也要留下证据：Apple 日志、submission ID、失败原因
+      - name: 归档公证诊断（失败时也保留）
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notarization-diagnostics-${{ needs.validate.outputs.version }}
+          path: |
+            notarization-report.json
+            notarization-logs
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: 汇总
         run: |
           {
-            echo "### 发布产物（未创建 GitHub Release）"
+            echo "### 发布产物"
             echo ""
             echo "| 项目 | 值 |"
             echo "| --- | --- |"
@@ -280,15 +361,119 @@ jobs:
             echo "| 签名模式 | ${SIGNING_MODE} |"
             echo "| 签名身份 | ${APPLE_SIGNING_IDENTITY:-未签名} |"
             echo "| Team ID | ${VIDEOFLOW_TEAM_ID:-—} |"
-            echo "| 公证 | ${NOTARIZATION_STATUS} |"
+            echo "| 公证状态（Apple 返回） | ${NOTARIZATION_STATUS:-未产生} |"
+            echo "| Submission ID | ${NOTARIZATION_SUBMISSION_ID:-—} |"
             echo "| FFmpeg | LGPL 静态构建（已通过许可证校验） |"
             echo ""
-            if [ "${SIGNING_MODE}" = "developer-id" ]; then
-              echo "签名已完成，但**未公证**：Gatekeeper 仍会拦截，用户需右键打开。"
-              echo "对外分发前必须完成 Apple Notarization（本轮按计划未执行）。"
+            if [ "${NOTARIZATION_STATUS:-}" = "ACCEPTED" ]; then
+              echo "已签名 + 已公证 + 已 staple，具备对外分发条件。"
+            elif [ "${NOTARIZATION_STATUS:-}" = "BLOCKED" ]; then
+              echo "**公证 BLOCKED**：缺少 App Store Connect Team API Key 凭据，产物不发布。"
             else
-              echo "**未签名产物，仅供内部测试**，禁止对外分发。"
+              echo "**公证未通过**（${NOTARIZATION_STATUS:-未知}）：产物不发布。"
             fi
             echo ""
-            echo "**未创建 GitHub Release**：发布 job 属于 Phase 4。"
+            echo "Release 由 release job 在全部检查通过后创建。"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 唯一持有写权限的 job：只有签名、公证、staple、完整性检查全部通过才会执行
+  release:
+    name: 创建 GitHub Release
+    needs: [validate, build]
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.dry_run == false)
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      TAG_NAME: ${{ github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 下载发布候选产物
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: videoflow-signed-notarized-${{ needs.validate.outputs.version }}
+          path: candidate
+
+      - name: 发布前完整性复核（校验和 / 版本 / 公证结论 / 未被占用）
+        run: |
+          set -euo pipefail
+          cd candidate/dist-release
+
+          echo "== SHA256SUMS =="
+          shasum -a 256 -c SHA256SUMS
+
+          echo "== 清单一致性 =="
+          node -e '
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync("release-manifest.json", "utf8"));
+            const version = process.env.VERSION;
+            const tag = process.env.TAG_NAME;
+            const problems = [];
+            if (m.version !== version) problems.push(`版本 ${m.version} != ${version}`);
+            if (m.tag !== tag) problems.push(`tag ${m.tag} != ${tag}`);
+            if (m.notarization?.status !== "ACCEPTED") problems.push(`公证状态为 ${m.notarization?.status}，不是 ACCEPTED`);
+            if (m.notarization?.ticket_stapled?.dmg !== true) problems.push("DMG 未装订票据");
+            if (!m.notarization?.submission_id) problems.push("缺少 submission ID");
+            if (problems.length) { console.error("::error::" + problems.join("；")); process.exit(1); }
+            console.log("清单校验通过：version/tag/公证状态/票据均一致");
+          '
+
+          echo "== 下载后的票据复验 =="
+          xcrun stapler validate ./*.dmg
+
+          echo "== 拒绝覆盖已有 Release =="
+          if gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "::error::Release ${TAG_NAME} 已存在，本项目不覆盖已发布的正式版本"
+            exit 1
+          fi
+          echo "Release ${TAG_NAME} 尚不存在，可以创建"
+
+      - name: 生成 Release 说明
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<EOF
+          VideoFlow ${TAG_NAME}
+
+          安装：下载 DMG，拖入「应用程序」。需 macOS 11.0 或更高版本（Apple Silicon）。
+
+          - 已用 Developer ID 签名，并通过 Apple 公证（staple 已完成）
+          - 内置 yt-dlp / ffmpeg / ffprobe（FFmpeg 为 LGPL 静态构建）
+          - 校验和见 SHA256SUMS；完整元数据见 release-manifest.json
+
+          许可证与源码获取方式见 THIRD_PARTY_LICENSES.md / SOURCE_OFFER.txt。
+          EOF
+          cat RELEASE_NOTES.md
+
+      - name: 创建 Release 并上传资产
+        run: |
+          set -euo pipefail
+          gh release create "${TAG_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "VideoFlow ${TAG_NAME}" \
+            --notes-file RELEASE_NOTES.md \
+            candidate/dist-release/*.dmg \
+            candidate/dist-release/*.app.zip \
+            candidate/dist-release/release-manifest.json \
+            candidate/dist-release/SHA256SUMS \
+            candidate/dist-release/THIRD_PARTY_LICENSES.md \
+            candidate/dist-release/SOURCE_OFFER.txt
+
+      - name: 断言 Release 已创建且资产齐全
+        run: |
+          set -euo pipefail
+          gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,assets \
+            > release.json
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync("release.json", "utf8"));
+            const names = r.assets.map(a => a.name).sort();
+            console.log("tag:", r.tagName, "draft:", r.isDraft, "assets:", names.join(", "));
+            const need = [".dmg", ".app.zip", "release-manifest.json", "SHA256SUMS", "THIRD_PARTY_LICENSES.md", "SOURCE_OFFER.txt"];
+            const missing = need.filter(suffix => !names.some(n => n.endsWith(suffix)));
+            if (r.isDraft) { console.error("::error::Release 仍为 draft"); process.exit(1); }
+            if (missing.length) { console.error("::error::Release 缺少资产: " + missing.join(", ")); process.exit(1); }
+            console.log("Release 资产校验通过");
+          '
+          echo "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG_NAME}" >> "$GITHUB_STEP_SUMMARY"

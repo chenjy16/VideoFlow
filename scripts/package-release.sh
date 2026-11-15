@@ -9,7 +9,8 @@
 #   VERSION               版本号，默认从 package.json 读取
 #   TRIPLE                默认 aarch64-apple-darwin
 #   SIGNING_MODE          unsigned | developer-id
-#   NOTARIZATION_STATUS   NOT_CONFIGURED / NOT_NOTARIZED / SUBMITTED / ACCEPTED / REJECTED
+#   NOTARIZATION_STATUS   BLOCKED / NOT_NOTARIZED / ACCEPTED / INVALID / REJECTED ...（取自 Apple 返回）
+#   NOTARIZATION_SUBMISSION_ID   notarytool 返回的 submission ID
 #   REQUIRE_NOTARIZATION  默认 false
 #   BUNDLE_DIR            默认 src-tauri/target/<triple>/release/bundle
 #   OUT_DIR               默认 dist-release
@@ -21,6 +22,7 @@ OUT_DIR="${OUT_DIR:-${REPO_ROOT}/dist-release}"
 BUNDLE_DIR="${BUNDLE_DIR:-${REPO_ROOT}/src-tauri/target/${TRIPLE}/release/bundle}"
 SIGNING_MODE="${SIGNING_MODE:-unsigned}"
 NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-NOT_NOTARIZED}"
+NOTARIZATION_SUBMISSION_ID="${NOTARIZATION_SUBMISSION_ID:-}"
 REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION:-false}"
 COMMIT_SHA="${COMMIT_SHA:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 TAG="${TAG:-}"
@@ -67,6 +69,18 @@ cp "$DMG" "${OUT_DIR}/${DMG_NAME}"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "${OUT_DIR}/${APP_ZIP_NAME}"
 echo "已归档: ${DMG_NAME} / ${APP_ZIP_NAME}"
 
+# 装订票据必须随复制后的制品一起存在（不能只看 bundle 里的原件）
+if xcrun stapler validate "${OUT_DIR}/${DMG_NAME}" >/dev/null 2>&1; then
+  TICKET_DMG=true
+else
+  TICKET_DMG=false
+  if [ "$REQUIRE_NOTARIZATION" = "true" ]; then
+    die "复制后的 DMG 丢失公证票据（stapler validate 失败），不得发布"
+  fi
+fi
+if xcrun stapler validate "$APP" >/dev/null 2>&1; then TICKET_APP=true; else TICKET_APP=false; fi
+echo "票据    : dmg=${TICKET_DMG} app=${TICKET_APP}"
+
 # 许可证随发布页可见，避免用户必须先装 App 才能读到要约
 cp "${REPO_ROOT}/docs/THIRD_PARTY_LICENSES.md" "${OUT_DIR}/THIRD_PARTY_LICENSES.md"
 cp "${REPO_ROOT}/licenses/SOURCE_OFFER.txt" "${OUT_DIR}/SOURCE_OFFER.txt"
@@ -90,6 +104,16 @@ zip_sha="$(sidecar_sha "${OUT_DIR}/${APP_ZIP_NAME}")"
 dmg_size="$(stat -f%z "${OUT_DIR}/${DMG_NAME}")"
 zip_size="$(stat -f%z "${OUT_DIR}/${APP_ZIP_NAME}")"
 
+if [ "$SIGNING_MODE" = "developer-id" ]; then
+  if [ "$NOTARIZATION_STATUS" = "ACCEPTED" ] && [ "$TICKET_DMG" = "true" ]; then
+    SIGN_DESC="Signed with Developer ID, Notarized and Stapled"
+  else
+    SIGN_DESC="Signed with Developer ID, Not Notarized"
+  fi
+else
+  SIGN_DESC="Unsigned (internal testing only)"
+fi
+
 cat > "${OUT_DIR}/release-manifest.json" <<EOF
 {
   "product": "${PRODUCT}",
@@ -102,13 +126,17 @@ cat > "${OUT_DIR}/release-manifest.json" <<EOF
     "mode": "${SIGNING_MODE}",
     "identity": "${SIGN_IDENTITY}",
     "team_id": "${SIGN_TEAM}",
-    "description": "$([ "$SIGNING_MODE" = "developer-id" ] && echo "Signed with Developer ID, Not Notarized" || echo "Unsigned (internal testing only)")",
+    "description": "${SIGN_DESC}",
     "hardened_runtime": ${HARDENED},
     "dmg_signed": ${DMG_SIGNED}
   },
   "notarization": {
+    "method": "app-store-connect-team-api-key",
+    "tool": "xcrun notarytool",
     "status": "${NOTARIZATION_STATUS}",
-    "required": ${REQUIRE_NOTARIZATION}
+    "submission_id": "${NOTARIZATION_SUBMISSION_ID}",
+    "required": ${REQUIRE_NOTARIZATION},
+    "ticket_stapled": { "dmg": ${TICKET_DMG}, "app": ${TICKET_APP} }
   },
   "engines": {
     "yt-dlp": { "version": "${YDL_VERSION}", "sha256": "$(sidecar_sha "$YDL")" },
