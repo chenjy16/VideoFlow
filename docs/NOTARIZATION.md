@@ -1,10 +1,12 @@
 # macOS 签名、Hardened Runtime、Entitlement 与公证
 
 本文档记录 VideoFlow 0.1.0 的签名链路现状、`com.apple.security.cs.disable-library-validation`
-这个 entitlement 为什么保留、它的安全影响，以及公证（notarization）当前为何处于 BLOCKED。
+这个 entitlement 为什么保留、它的安全影响，以及公证（notarization）的实现与当前启用状态。
 
-> 结论先行：**公证未完成（BLOCKED，缺凭据）**。其余签名项通过。本轮按决策保留 yt-dlp 的
-> onefile 打包与现有 entitlement，**不为移除 entitlement 改动已验证的下载核心**。
+> 结论先行：**本项目当前不使用 Apple Developer Program，公证能力已实现但未启用**。
+> 推送 `v*` tag 产出的是明确声明的 **unsigned / notarization-free 测试发行版**（GitHub Pre-release），
+> 不再因为“缺凭据”被判 BLOCKED。签名与公证的完整实现保留在代码里，重新申请账号后可直接启用。
+> 其余签名项（Developer ID 签名链路、Hardened Runtime、entitlement）保持既有结论。
 
 ---
 
@@ -76,13 +78,21 @@ Team ID 与 VideoFlow 不同；开启 Hardened Runtime 后，library validation 
 
 ---
 
-## 3. 公证：流程已落地，凭据未配置（BLOCKED）
+## 3. 公证：流程已落地，当前模式不启用
 
-### 3.1 现状
+### 3.1 现状：三种发布模式，只有 signed 模式要求公证
 
-公证流程已实现在 `scripts/notarize.sh`，并且 `release.yml` 的 `REQUIRE_NOTARIZATION` 恒为 `true`。
-当前仓库未配置凭据，因此每一次发布构建都会在公证步骤停下，状态记为 **`BLOCKED`**，不产出正式 Release。
-这是设计行为，不是“公证成功”。本文档不声称已经完成过公证。
+公证流程实现在 `scripts/notarize.sh`，但 `REQUIRE_NOTARIZATION` 不再是常量：
+
+| 模式 | 触发 | `REQUIRE_NOTARIZATION` | 公证 |
+| --- | --- | --- | --- |
+| internal | `workflow_dispatch` + `internal_build=true` | `false` | 不执行 |
+| **test release** | 推送 `v*` tag | `false` | 不执行 |
+| signed | `workflow_dispatch`（其它情况） | `true` | 执行，缺凭据即 `BLOCKED` |
+
+当前仓库不配置任何 Apple 凭据，因此 tag 发布固定走 **test release**：unsigned、未公证，
+状态写 `NOT_NOTARIZED`，产物以 **GitHub Pre-release** 分发（详见 7.2.2）。
+signed 模式仍然存在且门禁未削弱，只是暂时没有入口会用到它。本文档不声称已经完成过公证。
 
 ### 3.2 凭据来源：只支持 App Store Connect **Team** API Key
 
@@ -149,7 +159,7 @@ pnpm tauri build --target aarch64-apple-darwin   # 注意：不要给 bundler �
 | --- | --- | --- |
 | yt-dlp 改为 PyInstaller **onedir** | 让 `Python.framework` 与 `.so` 落在稳定路径、由我们统一签名，从而可能去掉 entitlement | 在**当前 PyInstaller 架构下**，onedir 是更值得评估的方案（同 Team ID、无需运行时解压、可整体签名）。但**不是唯一方案**；其它候选包括：为 framework 重新签名、改用 `--onedir` + `--contents-directory`、或改为调用系统 Python（需评估依赖与体积）。 |
 | entitlement 收敛到最小范围 | 仅让 `yt-dlp` 携带 `disable-library-validation`，主程序与 ffmpeg/ffprobe 保持无权限 | 已实验验证 ffmpeg/ffprobe 可去掉（2.4 节）；需要自定义签名顺序，绕开 `--deep` 扩散 |
-| 公证流水线 | 在 CI 中固定 API Key 公证 + staple + `spctl` 断言 | 本轮 BLOCKED 的根因是凭据缺失 |
+| 公证流水线 | 在 CI 中固定 API Key 公证 + staple + `spctl` 断言 | 实现已完成（Phase 4），启用前置是 Apple Developer Program 账号与三个公证 Secrets |
 | Intel / universal | 覆盖 x86_64 用户 | 需重建 FFmpeg 并重新取证 |
 
 以上均为独立评估项，进入前需各自明确验收标准，不得以“去掉 entitlement”本身为目标破坏现有功能。
@@ -179,12 +189,16 @@ CI 的签名模式完全由 Secrets 推导，**不做隐式降级**。
 
 | Secrets | 触发方式 | 结果 |
 | --- | --- | --- |
-| 0/3 | `workflow_dispatch` | `unsigned`，产物 `videoflow-internal-unsigned-<ver>`，仅供内部测试 |
-| 3/3 | 任意 | `developer-id`，产物 `videoflow-signed-unnotarized-<ver>` |
+| 0/3 | `workflow_dispatch`（非 internal） | `unsigned`，但满足不了 `REQUIRE_NOTARIZATION=true`，最终 BLOCKED |
+| 0/3 | `workflow_dispatch` + `internal_build=true` | `unsigned`，产物 `videoflow-internal-test-<ver>-<sha>`，只出 Artifact（Phase 5） |
+| 0/3 | `v*` tag | `unsigned` + **test release**（Phase 6，见 7.2.2），创建 Pre-release |
+| 3/3 | `workflow_dispatch`（非 internal） | `developer-id`，随后进入公证 |
+| 3/3 | `v*` tag | **仍强制 unsigned**：tag 不再走真实签名，避免产出“签了名但没公证”的灰色制品 |
 | 1~2/3 | 任意 | **立即失败**（避免“以为签了其实没签”） |
-| 0/3 | `v*` tag | **立即失败**（正式 Release 不接受未签名产物） |
 
-因此没有 Secrets 的环境只能用 `workflow_dispatch` 做内部构建；`v*` tag 一旦推送就要求签名齐备。
+因此当前（无 Apple 账号）的实际入口有两个：`workflow_dispatch + internal_build=true` 拿内部 Artifact，
+`v*` tag 拿测试发行 Pre-release。真实签名路径保留给未来配置齐 3 个签名 Secrets 后的
+`workflow_dispatch`（非 internal）。
 
 ### 6.3 私钥在流水线中的生命周期
 
@@ -251,11 +265,11 @@ CI 的签名模式完全由 Secrets 推导，**不做隐式降级**。
 
 | 签名 Secrets | 公证 Secrets | 触发 | 结果 |
 | --- | --- | --- | --- |
-| 3/3 | 3/3 | tag / dispatch | 正常签名 → 公证 → 发布（tag） |
-| 3/3 | 0/3 | dispatch | `BLOCKED`，构建失败，不发布 |
-| 3/3 | 0/3 | tag | validate 阶段直接失败（tag 必须可公证） |
-| 任意 | 1~2/3 | 任意 | 立即失败（不允许半配置） |
-| 0/3 | 任意 | tag | 立即失败（未签名不得发布） |
+| 3/3 | 3/3 | `workflow_dispatch`（非 internal，`dry_run=false`） | 正常签名 → 公证 → 创建 Release |
+| 3/3 | 0/3 | `workflow_dispatch`（非 internal） | `BLOCKED`，构建失败，不发布 |
+| 任意 | 任意 | `workflow_dispatch` + `internal_build=true` | unsigned Artifact，跳过公证，永不创建 Release |
+| 任意 | 任意 | 推送 `v*` tag | **test release**：强制 unsigned、跳过公证、创建 Pre-release（不看任何 Apple 凭据） |
+| 任意 | 1~2/3 | `workflow_dispatch`（非 internal） | 立即失败（不允许半配置） |
 
 ### 7.2.1 内部测试构建（`internal_build`，Phase 5）
 
@@ -269,6 +283,32 @@ CI 的签名模式完全由 Secrets 推导，**不做隐式降级**。
 | `internal_build=true` | release job 的 `if` 含 `inputs.internal_build != true`，永远不会创建 Release；build job 只有 `contents: read` |
 
 内部测试包的 `INTERNAL TEST BUILD - NOT NOTARIZED` 会同时出现在：文件名、DMG 卷内的 `INTERNAL_TEST_BUILD.txt`、`dist-release/INTERNAL_TEST_BUILD.txt`、`release-manifest.json` 的 `build_kind` / `distribution_notice`、`verification-report.txt` 首行、Step Summary。
+
+### 7.2.2 Tag 测试发行（`test_release`，Phase 6）
+
+在**没有 Apple Developer Program 账号**的前提下的默认发布方式。它不是“绕过检查”，
+而是把发布类型明确声明为未签名、未公证的测试发行版：
+
+| 条件 | 结果 |
+| --- | --- |
+| 推送 `v*` tag | `TEST_RELEASE=true`、`INTERNAL_BUILD=false`、`REQUIRE_NOTARIZATION=false`、`SIGNING_MODE=unsigned`、`ALLOW_UNSIGNED=1` |
+| Apple Secrets 是否存在 | **完全不检查**：`signing` / `notarize_creds` 两个判定步骤在 test 分支直接返回，不会因为“没有凭据”失败 |
+| Apple 公证步骤 | `if: env.INTERNAL_BUILD != 'true' && env.TEST_RELEASE != 'true'` → 跳过 |
+| 产物名 | `VideoFlow_0.1.0_aarch64_TEST-UNSIGNED.dmg` / `..._TEST-UNSIGNED.app.zip`；Artifact 名 `videoflow-test-release-<ver>-<sha>` |
+| 包内标记 | DMG 卷内 `TEST_RELEASE.txt`（写不进去直接中止发布） |
+| manifest | `build_kind: test-release`、`signing.mode: unsigned`、`signing.identity: null`、`notarization.status: NOT_NOTARIZED`、`ticket_stapled.dmg/app: false`、`distribution_notice: TEST RELEASE - UNSIGNED - NOT NOTARIZED` |
+| GitHub Release | `prerelease: true`，标题 `VideoFlow v0.1.0 - Test Release`；已存在同名 Release 时拒绝覆盖 |
+
+防止伪造的三道断言（缺一不可）：
+
+1. `verify-release.sh` 在 `TEST_RELEASE=true` 时只接受 `NOT_NOTARIZED`，碰到 `ACCEPTED` 直接 `fail`；
+2. 同一模式下断言 `.dmg` / `.app` **不带**公证票据（`stapler validate` 必须失败），
+   与 Phase 4 “必须带票据”的断言互为镜像；
+3. `release` job 下载产物后重新核对 manifest 五元组（`build_kind` / `signing.mode` /
+   `notarization.status` / `ticket_stapled.*` / `distribution_notice`）才创建 Release。
+
+行为矩阵的“强制 unsigned”不是自述：`package-release.sh` 会拒绝 `SIGNING_MODE=developer-id`
+和 `dmg_signed=true`，也就是说测试发行包不可能是签名产物。
 
 ### 7.3 流水线顺序（`release.yml` 的 build job）
 
@@ -324,6 +364,8 @@ manifest 的 `ticket_stapled` 由实测得出，不信环境变量。
 | 公证门禁（无票据时 3 项 FAIL） | **PASS** | 真实已签名 DMG：42 项中 3 项失败，均属公证项 |
 | 门禁无法用标签绕过 | **PASS** | 伪造 `NOTARIZATION_STATUS=ACCEPTED` 仍被票据断言拦住 |
 | `package-release.sh` 无票据拒绝打包 | **PASS** | 报“复制后的 DMG 丢失公证票据，不得发布” |
+| tag 测试发行门禁（14 个场景） | **PASS** | `scripts/test-release-gating.sh`，74 项断言全通过 |
+| 测试发行全链路（tag → Pre-release → DMG 安装启动） | 每轮 tag 实测回填 | 见 `docs/CI_CD_REPORT.md` |
 | workflow 全部 `run` 块语法 | **PASS** | 45 个 run 块 `bash -n` 全通过 |
 | **真实凭据下的完整公证（Accepted → staple → 发布）** | **NOT TESTED** | 仓库无凭据；尚未真实跑过 |
 | **`stapler staple` 对 DMG 内 `.app` 副本的行为** | **NOT TESTED** | 见 3.4 的结构限制说明 |

@@ -1,19 +1,22 @@
 name: Release
 
-# 发布流水线（Phase 4：Developer ID 签名 + Apple 公证 + 正式 Release）
+# 发布流水线：三种互相独立的模式（不要混用）
 #
-# 三道门，任何一道不通过都不产出正式 Release：
-#   1. 签名模式只由 Secrets 决定，不做隐式降级
-#      * APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY 齐备 → developer-id
-#      * 三者全空                                                                    → unsigned（内部 Artifact）
-#      * 只配置了一部分                                                              → 立即失败
-#   2. 公证只认 Apple 的返回：notarytool submit 的 status 必须为 Accepted 才 staple
-#      * APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_P8_BASE64 齐备 → 提交公证
-#      * 只配置了一部分                                                  → 立即失败
-#      * 全空 → 状态记为 BLOCKED，构建失败，不发布（REQUIRE_NOTARIZATION=true）
-#   3. 只有 staple / validate / 完整性检查全部通过，release job 才创建 GitHub Release
-#      * release job 是唯一持有 contents: write 的 job
-#      * 已存在的同名 Release 不会被覆盖
+#   internal  workflow_dispatch + internal_build=true
+#             → 强制 unsigned、不公证、只上传 Actions Artifact，永不创建 Release
+#
+#   test      推送 v* tag（当前唯一可用的发布方式）
+#             → 强制 unsigned、不公证、创建 **GitHub Pre-release**
+#             → 不读取、不检查任何 Apple 凭据；也不会因为“没有凭据”被判 BLOCKED
+#
+#   signed    workflow_dispatch（保留给未来的 Apple Developer Program）
+#             → 需要 3 个签名 Secrets + 3 个公证 Secrets；缺凭据即 BLOCKED，不发布
+#             → tag 触发不会再走这里：真实签名/公证要等重新启用（见 docs/NOTARIZATION.md）
+#
+# 无论哪种模式，都保留三道硬门禁：
+#   1. 模式由触发方式与输入唯一决定，不做隐式降级
+#   2. 公证结论只认 Apple 的返回；unsigned 模式绝不伪造 ACCEPTED、绝不伪造票据
+#   3. release job 是唯一持有 contents: write 的 job，且只由 tag 触发
 #
 # 本项目只使用 App Store Connect **Team** API Key（notarytool 必须带 --issuer），
 # 不使用 Apple ID + App-specific Password 路线。私钥仅存在于 $RUNNER_TEMP，用完即删。
@@ -44,11 +47,13 @@ concurrency:
 env:
   TRIPLE: aarch64-apple-darwin
   CARGO_TERM_COLOR: always
-  # Phase 4：发布必须公证。
-  # 唯一例外：workflow_dispatch + internal_build=true 的内部测试构建——它只能产出 unsigned
-  # Artifact（不 staple、不发布），tag 触发时禁止使用（见 validate 的断言）。
-  REQUIRE_NOTARIZATION: ${{ github.event_name == 'workflow_dispatch' && inputs.internal_build && 'false' || 'true' }}
+  # 三种模式互斥，且全部由触发方式唯一决定：
+  #   tag                            → test_release（unsigned，创建 Pre-release）
+  #   dispatch + internal_build=true → 内部测试构建（unsigned，只出 Artifact）
+  #   dispatch 其它情况              → signed 路径（需要 Apple 凭据，缺则 BLOCKED）
   INTERNAL_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.internal_build && 'true' || 'false' }}
+  TEST_RELEASE: ${{ github.ref_type == 'tag' && 'true' || 'false' }}
+  REQUIRE_NOTARIZATION: ${{ (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.internal_build)) && 'false' || 'true' }}
 
 jobs:
   validate:
@@ -59,6 +64,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       short_sha: ${{ steps.version.outputs.short_sha }}
       signing_mode: ${{ steps.signing.outputs.mode }}
+      test_release: ${{ steps.signing.outputs.test_release }}
       notarization_ready: ${{ steps.notarize_creds.outputs.ready }}
     steps:
       - name: 校验 Runner 架构（arm64）
@@ -90,10 +96,19 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             tag_version="${GITHUB_REF_NAME#v}"
             echo "git tag            : ${GITHUB_REF_NAME}（解析为 ${tag_version}）"
-            if [ "$tag_version" != "$pkg" ]; then
-              echo "::error::tag ${GITHUB_REF_NAME} 与版本号 ${pkg} 不一致，发布中止"
-              exit 1
-            fi
+            # 允许两种 tag 形态：正式版 v<version>，以及不占用正式版本号的测试 tag v<version>-test.<N>
+            case "$tag_version" in
+              "$pkg")
+                echo "tag 与版本号一致"
+                ;;
+              "$pkg"-test.[0-9]*)
+                echo "测试 tag：${GITHUB_REF_NAME}（对应版本 ${pkg}），不占用正式版本号"
+                ;;
+              *)
+                echo "::error::tag ${GITHUB_REF_NAME} 与版本号 ${pkg} 不一致（只允许 v${pkg} 或 v${pkg}-test.<N>），发布中止"
+                exit 1
+                ;;
+            esac
           else
             echo "git ref            : ${GITHUB_REF_NAME}（非 tag，手动触发）"
           fi
@@ -110,6 +125,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          # tag 测试发布：强制 unsigned，且完全不触碰 Apple 签名 Secrets（不统计、不报错）
+          if [ "${TEST_RELEASE}" = "true" ]; then
+            if [ "${INTERNAL_BUILD}" = "true" ]; then
+              echo "::error::TEST_RELEASE 与 INTERNAL_BUILD 互斥"
+              exit 1
+            fi
+            echo "tag 测试发布：强制 unsigned（不检查 Apple 签名 Secrets）"
+            echo "mode=unsigned" >> "$GITHUB_OUTPUT"
+            echo "signing_ready=false" >> "$GITHUB_OUTPUT"
+            echo "test_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # 内部测试构建一律未签名：内部包要在 DMG 内写标记，签名包改写会破坏签名；
           # 也避免产出"签了名但没公证"的灰色制品。
           if [ "${INTERNAL_BUILD}" = "true" ]; then
@@ -120,6 +148,7 @@ jobs:
             echo "内部测试构建：强制 unsigned（忽略签名 Secrets）"
             echo "mode=unsigned" >> "$GITHUB_OUTPUT"
             echo "signing_ready=false" >> "$GITHUB_OUTPUT"
+            echo "test_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -146,6 +175,7 @@ jobs:
           fi
 
           echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+          echo "test_release=false" >> "$GITHUB_OUTPUT"
           if [ "$mode" = "developer-id" ]; then
             echo "signing_ready=true" >> "$GITHUB_OUTPUT"
           else
@@ -161,6 +191,17 @@ jobs:
           APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
         run: |
           set -euo pipefail
+
+          # tag 测试发布：明确不要求公证，因此也不读、不统计任何 Apple 凭据
+          if [ "${TEST_RELEASE}" = "true" ]; then
+            if [ "${REQUIRE_NOTARIZATION}" = "true" ]; then
+              echo "::error::TEST_RELEASE=true 时 REQUIRE_NOTARIZATION 必须为 false（当前 ${REQUIRE_NOTARIZATION}）"
+              exit 1
+            fi
+            echo "tag 测试发布：跳过公证凭据检查（产物将标记为 TEST RELEASE - UNSIGNED - NOT NOTARIZED）"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # 内部测试构建：允许无凭据产出 unsigned Artifact，但绝不能用于正式发布
           if [ "${INTERNAL_BUILD}" = "true" ]; then
@@ -217,8 +258,9 @@ jobs:
             echo "| 目标 | aarch64-apple-darwin |"
             echo "| 签名 Secrets | $([ "${{ steps.signing.outputs.mode }}" = "developer-id" ] && echo "3/3 已配置" || echo "未配置") |"
             echo "| 本次签名模式 | ${{ steps.signing.outputs.mode }} |"
-            echo "| 公证凭据（Team API Key） | $([ "${{ steps.notarize_creds.outputs.ready }}" = "true" ] && echo "3/3 已配置" || echo "未配置 → 预期 BLOCKED") |"
+            echo "| 公证凭据（Team API Key） | $([ "${{ steps.notarize_creds.outputs.ready }}" = "true" ] && echo "3/3 已配置" || echo "不要求（测试发布/内部构建）/ 未配置 → 预期 BLOCKED") |"
             echo "| 内部测试构建 | ${INTERNAL_BUILD} |"
+            echo "| 测试发布（tag） | ${TEST_RELEASE} |"
             echo "| REQUIRE_NOTARIZATION | ${REQUIRE_NOTARIZATION} |"
             echo "| GitHub Release | $([ "${GITHUB_REF_TYPE}" = "tag" ] && echo "全部检查通过后创建" || echo "不创建（非 tag）") |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -327,8 +369,8 @@ jobs:
       # 公证：私钥解码到 $RUNNER_TEMP，提交后立刻删除；状态取自 Apple 返回的 JSON。
       # 凭据缺失 → BLOCKED 并失败（绝不跳过公证继续发布）。
       - name: Apple 公证（notarytool submit + staple + validate）
-        # 内部测试构建不是发布产物：不提交 Apple，也不允许出现"未公证却能发布"的产物
-        if: env.INTERNAL_BUILD != 'true'
+        # 只有 signed 模式才提交 Apple：内部构建与 tag 测试发布都不应触碰公证
+        if: env.INTERNAL_BUILD != 'true' && env.TEST_RELEASE != 'true'
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -353,6 +395,7 @@ jobs:
           # developer-id 模式下由导入步骤回填期望值，这里强制断言签名身份与 Team ID
           EXPECTED_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}" \
           EXPECTED_TEAM_ID="${VIDEOFLOW_TEAM_ID:-}" \
+          NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-$([ "${TEST_RELEASE}" = "true" ] && echo NOT_NOTARIZED || echo '')}" \
             ./scripts/verify-release.sh
           cat verification-report.txt >> "$GITHUB_STEP_SUMMARY"
 
@@ -367,10 +410,11 @@ jobs:
           COMMIT_SHA="${GITHUB_SHA}" \
           TRIPLE="${TRIPLE}" \
           SIGNING_MODE="${SIGNING_MODE}" \
-          NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-$([ "${INTERNAL_BUILD}" = "true" ] && echo NOT_NOTARIZED || echo BLOCKED)}" \
+          NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-$([ "${INTERNAL_BUILD}" = "true" ] || [ "${TEST_RELEASE}" = "true" ] && echo NOT_NOTARIZED || echo BLOCKED)}" \
           NOTARIZATION_SUBMISSION_ID="${NOTARIZATION_SUBMISSION_ID:-}" \
           REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION}" \
           INTERNAL_BUILD="${INTERNAL_BUILD}" \
+          TEST_RELEASE="${TEST_RELEASE}" \
             ./scripts/package-release.sh
 
       - name: 上传发布候选产物
@@ -378,8 +422,9 @@ jobs:
         with:
           # 产物名就是承诺：
           #   internal_build=true → internal-test-<version>-<short sha>，永远不可能是正式版
+          #   tag 测试发布        → test-release-<version>-<short sha>，进 Pre-release
           #   developer-id 分支只能走到这里，而它会先通过公证门禁
-          name: ${{ inputs.internal_build == true && format('videoflow-internal-test-{0}-{1}', needs.validate.outputs.version, needs.validate.outputs.short_sha) || format('videoflow-{0}-{1}', needs.validate.outputs.signing_mode == 'developer-id' && 'signed-notarized' || 'internal-unsigned', needs.validate.outputs.version) }}
+          name: ${{ inputs.internal_build == true && format('videoflow-internal-test-{0}-{1}', needs.validate.outputs.version, needs.validate.outputs.short_sha) || (github.ref_type == 'tag' && format('videoflow-test-release-{0}-{1}', needs.validate.outputs.version, needs.validate.outputs.short_sha) || format('videoflow-{0}-{1}', needs.validate.outputs.signing_mode == 'developer-id' && 'signed-notarized' || 'internal-unsigned', needs.validate.outputs.version)) }}
           path: |
             dist-release
             verification-report.txt
@@ -408,7 +453,13 @@ jobs:
             echo "| --- | --- |"
             echo "| 版本 | ${VERSION} |"
             echo "| commit | ${SHORT_SHA} |"
-            echo "| 内部测试构建 | ${INTERNAL_BUILD} |"
+            if [ "${TEST_RELEASE}" = "true" ]; then
+              echo "| 发布模式 | test-release（unsigned / notarization-free） |"
+            elif [ "${INTERNAL_BUILD}" = "true" ]; then
+              echo "| 发布模式 | internal-build（只出 Artifact） |"
+            else
+              echo "| 发布模式 | signed |"
+            fi
             echo "| 签名模式 | ${SIGNING_MODE} |"
             echo "| 签名身份 | ${APPLE_SIGNING_IDENTITY:-未签名} |"
             echo "| Team ID | ${VIDEOFLOW_TEAM_ID:-—} |"
@@ -420,6 +471,11 @@ jobs:
               echo "**INTERNAL TEST BUILD - NOT NOTARIZED**"
               echo ""
               echo "仅供内部安装与运行验证，不是正式发布产物，禁止对外分发。"
+            elif [ "${TEST_RELEASE}" = "true" ]; then
+              echo "**TEST RELEASE - UNSIGNED - NOT NOTARIZED**"
+              echo ""
+              echo "macOS ARM64 测试发行版：未使用 Developer ID 签名，未经 Apple 公证。"
+              echo "安装时 Gatekeeper 可能阻止打开或显示安全警告，需用户自行决定是否信任。"
             elif [ "${NOTARIZATION_STATUS:-}" = "ACCEPTED" ]; then
               echo "已签名 + 已公证 + 已 staple，具备对外分发条件。"
             elif [ "${NOTARIZATION_STATUS:-}" = "BLOCKED" ]; then
@@ -428,10 +484,14 @@ jobs:
               echo "**公证未通过**（${NOTARIZATION_STATUS:-未知}）：产物不发布。"
             fi
             echo ""
-            echo "Release 由 release job 在全部检查通过后创建。"
+            if [ "${TEST_RELEASE}" = "true" ]; then
+              echo "Release 由 release job 在全部检查通过后创建为 **Pre-release**。"
+            else
+              echo "Release 由 release job 在全部检查通过后创建。"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # 唯一持有写权限的 job：只有签名、公证、staple、完整性检查全部通过才会执行
+  # 唯一持有写权限的 job：只有 tag 触发、且 build 的全部检查通过才会执行
   release:
     name: 创建 GitHub Release
     needs: [validate, build]
@@ -443,15 +503,18 @@ jobs:
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       TAG_NAME: ${{ github.ref_name }}
+      # test-release → 创建 Pre-release；signed → 创建正式版（当前不可达，保留未来能力）
+      TEST_RELEASE: ${{ needs.validate.outputs.test_release }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: 下载发布候选产物
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: videoflow-signed-notarized-${{ needs.validate.outputs.version }}
+          # 测试发布与签名发布的产物名不同，绝不能串用
+          name: ${{ needs.validate.outputs.test_release == 'true' && format('videoflow-test-release-{0}-{1}', needs.validate.outputs.version, needs.validate.outputs.short_sha) || format('videoflow-signed-notarized-{0}', needs.validate.outputs.version) }}
           path: candidate
 
-      - name: 发布前完整性复核（校验和 / 版本 / 公证结论 / 未被占用）
+      - name: 发布前完整性复核（校验和 / 版本 / 发布结论 / 未被占用）
         run: |
           set -euo pipefail
           cd candidate/dist-release
@@ -459,28 +522,48 @@ jobs:
           echo "== SHA256SUMS =="
           shasum -a 256 -c SHA256SUMS
 
-          echo "== 清单一致性 =="
+          echo "== 清单一致性（TEST_RELEASE=${TEST_RELEASE:-false}）=="
           node -e '
             const fs = require("fs");
             const m = JSON.parse(fs.readFileSync("release-manifest.json", "utf8"));
             const version = process.env.VERSION;
             const tag = process.env.TAG_NAME;
+            const testRelease = process.env.TEST_RELEASE === "true";
             const problems = [];
             if (m.version !== version) problems.push(`版本 ${m.version} != ${version}`);
             if (m.tag !== tag) problems.push(`tag ${m.tag} != ${tag}`);
-            if (m.notarization?.status !== "ACCEPTED") problems.push(`公证状态为 ${m.notarization?.status}，不是 ACCEPTED`);
-            if (m.notarization?.ticket_stapled?.dmg !== true) problems.push("DMG 未装订票据");
-            if (!m.notarization?.submission_id) problems.push("缺少 submission ID");
+            if (testRelease) {
+              // 测试发布：必须是 unsigned + 未公证，且不能出现任何公证痕迹
+              if (m.build_kind !== "test-release") problems.push(`build_kind 为 ${m.build_kind}，期望 test-release`);
+              if (m.signing?.mode !== "unsigned") problems.push(`签名模式为 ${m.signing?.mode}，测试发布必须 unsigned`);
+              if (m.notarization?.status !== "NOT_NOTARIZED") problems.push(`公证状态为 ${m.notarization?.status}，测试发布必须是 NOT_NOTARIZED`);
+              if (m.notarization?.ticket_stapled?.dmg !== false) problems.push("测试发布的 DMG 不应带公证票据");
+              if (m.notarization?.ticket_stapled?.app !== false) problems.push("测试发布的 .app 不应带公证票据");
+              if (m.distribution_notice !== "TEST RELEASE - UNSIGNED - NOT NOTARIZED") problems.push(`distribution_notice 为 "${m.distribution_notice}"，与发布声明不一致`);
+            } else {
+              if (m.notarization?.status !== "ACCEPTED") problems.push(`公证状态为 ${m.notarization?.status}，不是 ACCEPTED`);
+              if (m.notarization?.ticket_stapled?.dmg !== true) problems.push("DMG 未装订票据");
+              if (!m.notarization?.submission_id) problems.push("缺少 submission ID");
+            }
             if (problems.length) { console.error("::error::" + problems.join("；")); process.exit(1); }
-            console.log("清单校验通过：version/tag/公证状态/票据均一致");
+            console.log("清单校验通过");
           '
 
-          echo "== 下载后的票据复验 =="
-          xcrun stapler validate ./*.dmg
+          if [ "${TEST_RELEASE}" = "true" ]; then
+            echo "== 测试发布：确认不携带公证票据 =="
+            if xcrun stapler validate ./*.dmg >/dev/null 2>&1; then
+              echo "::error::测试发布的 DMG 带上了公证票据，与 unsigned 声明矛盾"
+              exit 1
+            fi
+            echo "无公证票据（预期）"
+          else
+            echo "== 下载后的票据复验 =="
+            xcrun stapler validate ./*.dmg
+          fi
 
-          echo "== 拒绝覆盖已有 Release =="
+          echo "== 拒绝覆盖已有 Tag / Release =="
           if gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "::error::Release ${TAG_NAME} 已存在，本项目不覆盖已发布的正式版本"
+            echo "::error::Release ${TAG_NAME} 已存在，本项目不覆盖已发布的产物"
             exit 1
           fi
           echo "Release ${TAG_NAME} 尚不存在，可以创建"
@@ -488,7 +571,28 @@ jobs:
       - name: 生成 Release 说明
         run: |
           set -euo pipefail
-          cat > RELEASE_NOTES.md <<EOF
+          if [ "${TEST_RELEASE}" = "true" ]; then
+            cat > RELEASE_NOTES.md <<EOF
+          VideoFlow ${TAG_NAME} - Test Release
+
+          macOS ARM64 测试发行版：**未签名、未公证（UNSIGNED / NOT NOTARIZED）**。
+
+          安装：下载 DMG 并双击挂载，把 VideoFlow.app 拖入「应用程序」。需 macOS 11.0 或更高版本（Apple Silicon）。
+
+          ## 重要提示
+
+          - 该包没有 Developer ID 签名，也没有经过 Apple 公证，Gatekeeper 可能阻止打开或提示无法验证开发者。
+          - 请在确认文件来源可信后自行处理：系统设置 → 隐私与安全性 → 仍要打开；或对 App 执行 xattr -dr com.apple.quarantine 再去隔离后打开。
+          - 本项目不声称该包已通过 Apple 公证或 Gatekeeper 完整验收；它是可安装、可运行的测试版本，不是正式稳定版。
+
+          ## 内容
+
+          - 内置 yt-dlp / ffmpeg / ffprobe（FFmpeg 为 LGPL 静态构建）
+          - 校验和见 SHA256SUMS；元数据见 release-manifest.json（build_kind=test-release）
+          - 许可证与源码获取方式见 THIRD_PARTY_LICENSES.md / SOURCE_OFFER.txt
+          EOF
+          else
+            cat > RELEASE_NOTES.md <<EOF
           VideoFlow ${TAG_NAME}
 
           安装：下载 DMG，拖入「应用程序」。需 macOS 11.0 或更高版本（Apple Silicon）。
@@ -499,16 +603,25 @@ jobs:
 
           许可证与源码获取方式见 THIRD_PARTY_LICENSES.md / SOURCE_OFFER.txt。
           EOF
+          fi
           cat RELEASE_NOTES.md
 
       - name: 创建 Release 并上传资产
         run: |
           set -euo pipefail
+          TITLE="VideoFlow ${TAG_NAME}"
+          # 不用数组：macOS 自带 bash 3.2 在 set -u 下展开空数组会报 unbound variable
+          PRE_ARG=""
+          if [ "${TEST_RELEASE}" = "true" ]; then
+            TITLE="VideoFlow ${TAG_NAME} - Test Release"
+            PRE_ARG="--prerelease"
+          fi
           gh release create "${TAG_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
-            --title "VideoFlow ${TAG_NAME}" \
+            --title "${TITLE}" \
             --notes-file RELEASE_NOTES.md \
+            ${PRE_ARG} \
             candidate/dist-release/*.dmg \
             candidate/dist-release/*.app.zip \
             candidate/dist-release/release-manifest.json \
@@ -519,15 +632,17 @@ jobs:
       - name: 断言 Release 已创建且资产齐全
         run: |
           set -euo pipefail
-          gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,assets \
+          gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease,assets \
             > release.json
           node -e '
             const r = JSON.parse(require("fs").readFileSync("release.json", "utf8"));
             const names = r.assets.map(a => a.name).sort();
-            console.log("tag:", r.tagName, "draft:", r.isDraft, "assets:", names.join(", "));
+            const testRelease = process.env.TEST_RELEASE === "true";
+            console.log("tag:", r.tagName, "draft:", r.isDraft, "prerelease:", r.isPrerelease, "assets:", names.join(", "));
             const need = [".dmg", ".app.zip", "release-manifest.json", "SHA256SUMS", "THIRD_PARTY_LICENSES.md", "SOURCE_OFFER.txt"];
             const missing = need.filter(suffix => !names.some(n => n.endsWith(suffix)));
             if (r.isDraft) { console.error("::error::Release 仍为 draft"); process.exit(1); }
+            if (testRelease && r.isPrerelease !== true) { console.error("::error::测试发布必须是 Pre-release"); process.exit(1); }
             if (missing.length) { console.error("::error::Release 缺少资产: " + missing.join(", ")); process.exit(1); }
             console.log("Release 资产校验通过");
           '

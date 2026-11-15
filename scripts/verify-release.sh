@@ -12,6 +12,7 @@
 #   REQUIRE_NOTARIZATION  默认 false；为 true 时必须 stapler validate 通过
 #   NOTARIZATION_STATUS   由 notarize.sh 从 Apple 返回的 JSON 写入；为 true 时必须为 ACCEPTED
 #   INTERNAL_BUILD        默认 false；为 true 时只能是 unsigned 内部测试包（报告首行会醒目标记）
+#   TEST_RELEASE          默认 false；为 true 时是 tag 测试发行：必须 unsigned + 未公证，且不得带任何公证痕迹
 #   EXPECTED_SIGNING_IDENTITY  developer-id 模式下期望的签名身份全名（由 import-signing-certificate.sh 回填）
 #   EXPECTED_TEAM_ID           developer-id 模式下期望的 Team ID（同上）
 #   EXPECTED_VERSION      若设置则校验 CFBundleShortVersionString
@@ -25,6 +26,7 @@ SIGNING_MODE="${SIGNING_MODE:-unsigned}"
 ALLOW_UNSIGNED="${ALLOW_UNSIGNED:-0}"
 REQUIRE_NOTARIZATION="${REQUIRE_NOTARIZATION:-false}"
 INTERNAL_BUILD="${INTERNAL_BUILD:-false}"
+TEST_RELEASE="${TEST_RELEASE:-false}"
 NOTARIZATION_STATUS="${NOTARIZATION_STATUS:-}"
 EXPECTED_SIGNING_IDENTITY="${EXPECTED_SIGNING_IDENTITY:-}"
 EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-}"
@@ -61,6 +63,7 @@ echo "dmg     : ${DMG:-<未找到>}"
 echo "签名模式: ${SIGNING_MODE}"
 echo "公证要求: ${REQUIRE_NOTARIZATION}"
 if [ "$INTERNAL_BUILD" = "true" ]; then echo "构建类型: INTERNAL TEST BUILD - NOT NOTARIZED"; fi
+if [ "$TEST_RELEASE" = "true" ]; then echo "构建类型: TEST RELEASE - UNSIGNED - NOT NOTARIZED"; fi
 echo
 
 # 内部测试包必须是不签名 + 显式放行的，三条任意一条不满足就是配置错了
@@ -74,6 +77,27 @@ if [ "$INTERNAL_BUILD" = "true" ]; then
   if [ "$ALLOW_UNSIGNED" != "1" ]; then
     fail "INTERNAL_BUILD=true 但 ALLOW_UNSIGNED=${ALLOW_UNSIGNED}，未显式放行"
   fi
+fi
+
+# tag 测试发行：unsigned + 未公证，且不允许出现任何“已公证”的痕迹
+if [ "$TEST_RELEASE" = "true" ]; then
+  if [ "$INTERNAL_BUILD" = "true" ]; then
+    fail "TEST_RELEASE 与 INTERNAL_BUILD 互斥（两种发布模式不能同时开启）"
+  fi
+  if [ "$REQUIRE_NOTARIZATION" = "true" ]; then
+    fail "TEST_RELEASE=true 却要求公证，配置矛盾"
+  fi
+  if [ "$SIGNING_MODE" != "unsigned" ]; then
+    fail "TEST_RELEASE=true 但签名模式为 ${SIGNING_MODE}，测试发行必须 unsigned"
+  fi
+  if [ "$ALLOW_UNSIGNED" != "1" ]; then
+    fail "TEST_RELEASE=true 但 ALLOW_UNSIGNED=${ALLOW_UNSIGNED}，未显式放行"
+  fi
+  case "$NOTARIZATION_STATUS" in
+    ""|NOT_NOTARIZED) pass "测试发行公证状态为 NOT_NOTARIZED（未启用 Apple Notarization）" ;;
+    ACCEPTED) fail "TEST_RELEASE 声称 ACCEPTED，但这是 unsigned 未公证构建；拒绝伪造公证状态" ;;
+    *) fail "TEST_RELEASE 的公证状态为 ${NOTARIZATION_STATUS}，只允许 NOT_NOTARIZED" ;;
+  esac
 fi
 
 if [ -z "$DMG" ] || [ ! -f "$DMG" ]; then
@@ -315,6 +339,22 @@ else
     fail "产物未签名且未允许未签名发布（ALLOW_UNSIGNED=${ALLOW_UNSIGNED}）"
   fi
   info "签名状态: NOT_SIGNED"
+
+  # 测试发行的“unsigned”声明必须与产物一致：只要出现 Developer ID 签发就不能叫 unsigned
+  if [ "$TEST_RELEASE" = "true" ]; then
+    app_auth="$(codesign -dv --verbose=2 "$APP" 2>&1 || true)"
+    if printf '%s\n' "$app_auth" | grep -q '^Authority=Developer ID Application'; then
+      fail "测试发行的 .app 带 Developer ID 签名，与 unsigned 声明矛盾"
+    else
+      pass "测试发行的 .app 未经 Developer ID 签名（unsigned）"
+    fi
+    dmg_auth="$(codesign -dv --verbose=2 "$DMG" 2>&1 || true)"
+    if printf '%s\n' "$dmg_auth" | grep -q '^Authority=Developer ID Application'; then
+      fail "测试发行的 .dmg 带 Developer ID 签名，与 unsigned 声明矛盾"
+    else
+      pass "测试发行的 .dmg 未经 Developer ID 签名（unsigned）"
+    fi
+  fi
 fi
 
 # Gatekeeper 评估只记录，具体判定放在第 4 节：
@@ -362,6 +402,21 @@ if [ "$REQUIRE_NOTARIZATION" = "true" ]; then
   fi
 else
   info "公证状态: NOT_NOTARIZED（未启用 Apple Notarization）"
+  if [ "$TEST_RELEASE" = "true" ]; then
+    if xcrun stapler validate "$DMG" >/dev/null 2>&1; then
+      fail "测试发行的 DMG 携带公证票据，与 unsigned 声明矛盾（不允许伪造 Staple）"
+    else
+      pass "测试发行的 DMG 不含公证票据（预期）"
+    fi
+    bundle_app="${BUNDLE_DIR}/macos/${PRODUCT}.app"
+    if [ -d "$bundle_app" ]; then
+      if xcrun stapler validate "$bundle_app" >/dev/null 2>&1; then
+        fail "测试发行的 .app 携带公证票据，与 unsigned 声明矛盾"
+      else
+        pass "测试发行的 .app 不含公证票据（预期）"
+      fi
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -371,6 +426,9 @@ fi
   echo "VideoFlow 发布校验报告"
   if [ "$INTERNAL_BUILD" = "true" ]; then
     echo "INTERNAL TEST BUILD - NOT NOTARIZED"
+  fi
+  if [ "$TEST_RELEASE" = "true" ]; then
+    echo "TEST RELEASE - UNSIGNED - NOT NOTARIZED"
   fi
   echo "时间    : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "目标    : ${TRIPLE}"
