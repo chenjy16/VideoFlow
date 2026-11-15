@@ -9,7 +9,7 @@
 | 目标 | 触发方式 | 产物 | Release？ |
 | --- | --- | --- | --- |
 | 只想拿到一个能装的包自己试 | Actions → release → Run workflow，勾 `internal_build` | Actions Artifact `videoflow-internal-test-<ver>-<sha>` | 不创建 |
-| 对外发一个测试版 | `git tag v0.1.0 && git push origin v0.1.0` | GitHub **Pre-release** + `VideoFlow_0.1.0_aarch64_TEST-UNSIGNED.dmg` | 创建（prerelease） |
+| 对外发一个测试版 | `git tag v0.1.0 && git push origin v0.1.0` | GitHub **Pre-release** + `VideoFlow_0.1.0_aarch64.dmg` | 创建（prerelease） |
 | 未来发正式版 | 配齐 6 个 Apple Secrets 后 `workflow_dispatch`（不勾 internal，`dry_run=false`） | 正式 Release | 创建 |
 
 三种模式互斥，由**触发方式**唯一决定，不做隐式降级：
@@ -57,8 +57,8 @@ gh run watch
 
 | 文件 | 说明 |
 | --- | --- |
-| `VideoFlow_<ver>_aarch64_TEST-UNSIGNED.dmg` | 用户下载的安装镜像，卷内含 `TEST_RELEASE.txt` |
-| `VideoFlow_<ver>_aarch64_TEST-UNSIGNED.app.zip` | `.app` 压缩包（ditto 打包，保留符号链接） |
+| `VideoFlow_<ver>_aarch64.dmg` | 用户下载的安装镜像，卷内含 `TEST_RELEASE.txt` |
+| `VideoFlow_<ver>_aarch64.app.zip` | `.app` 压缩包（ditto 打包，保留符号链接） |
 | `SHA256SUMS` | 覆盖上面两个文件与下面三个材料文件 |
 | `release-manifest.json` | 构建类型、签名、公证状态、引擎版本、许可证索引 |
 | `THIRD_PARTY_LICENSES.md` | 第三方许可证汇总（对应需求里的 THIRD_PARTY_NOTICES） |
@@ -66,6 +66,12 @@ gh run watch
 
 共 **6 个** Release 资产。`verification-report.txt` 不进 Release，只随 Actions Artifact 保留；
 `TEST_RELEASE.txt` 只存在于 DMG 卷内（写入后从发布目录删除，避免 SHA256SUMS 指向用户拿不到的文件）。
+
+> **文件名不再区分正式版与测试版。** 测试发行与签名正式版使用同一套文件名
+> （`VideoFlow_<ver>_aarch64.dmg` / `.app.zip`），未签名、未公证的身份只由
+> 「Pre-release 标记 + Release Notes 声明 + manifest 的 `build_kind`/`notarization` + DMG 卷内 `TEST_RELEASE.txt`」
+> 四处承载。拿到文件后不要靠文件名判断是否公证：先 `shasum -a 256 -c SHA256SUMS` 校验完整性，
+> 再查 `release-manifest.json` 里的 `notarization.status`。
 
 ### 1.5 发布状态一致性（四处必须一致）
 

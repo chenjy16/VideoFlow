@@ -88,9 +88,13 @@ mkdir -p "$OUT_DIR"
 
 if [ "$INTERNAL_BUILD" = "true" ]; then
   BUILD_TAG="INTERNAL-TEST-${COMMIT_SHA:0:7}-NOT-NOTARIZED"
-elif [ "$TEST_RELEASE" = "true" ]; then
-  BUILD_TAG="TEST-UNSIGNED"
 else
+  # 测试发行（tag 触发）不再往文件名里加标记，产物名与正式版同形：
+  #   VideoFlow_<ver>_aarch64.dmg / .app.zip
+  # 未签名、未公证的身份改由另外三处承载，缺一不可：
+  #   1) release-manifest.json 的 build_kind / signing / notarization / distribution_notice
+  #   2) GitHub Release 的 prerelease 标记与 Release Notes 声明
+  #   3) DMG 卷内的 TEST_RELEASE.txt（写不进去即中止发布）
   BUILD_TAG=""
 fi
 

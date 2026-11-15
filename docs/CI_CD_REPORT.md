@@ -93,6 +93,9 @@ Release：<https://github.com/chenjy16/VideoFlow/releases/tag/v0.1.0-test.3>
 
 `verification-report.txt` 只随 Actions Artifact 保留，不进 Release。
 
+> 本节是 v0.1.0-test.3 的历史快照，产物名仍带 `_TEST-UNSIGNED`（当时的命名规则）。
+> Phase 7 起测试发行不再加该后缀，产物名与正式版同形；历史记录保持原样，不回改。
+
 ### 3.2 SHA256
 
 DMG 下载地址：
@@ -211,9 +214,9 @@ gh run watch
 # 下载并校验
 gh release download v0.1.0-test.4 -D /tmp/vf && cd /tmp/vf && shasum -a 256 -c SHA256SUMS
 
-# 挂载检查
-hdiutil attach VideoFlow_0.1.0_aarch64_TEST-UNSIGNED.dmg -nobrowse -readonly
+# 挂载检查（Phase 7 起测试发行不带 _TEST-UNSIGNED 后缀）
+hdiutil attach VideoFlow_0.1.0_aarch64.dmg -nobrowse -readonly
 cat /Volumes/VideoFlow/TEST_RELEASE.txt
-xcrun stapler validate VideoFlow_0.1.0_aarch64_TEST-UNSIGNED.dmg   # 预期：无票据
+xcrun stapler validate VideoFlow_0.1.0_aarch64.dmg   # 预期：无票据
 hdiutil detach /Volumes/VideoFlow
 ```

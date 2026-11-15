@@ -526,15 +526,23 @@ CHECKSUMS="${REPO_ROOT}/scripts/generate-checksums.sh"
 [ -f "$PKG" ] || die "找不到 $PKG"
 [ -f "$CHECKSUMS" ] || die "找不到 $CHECKSUMS"
 
+# Phase 7 起测试发行与正式版同名：文件名不再承载 unsigned 身份，
+# 因此必须同时断言“文件名没有标记”与“manifest / DMG 卷内标记仍在”，缺一不可。
 if grep -q 'BUILD_TAG="TEST-UNSIGNED"' "$PKG"; then
-  ok "package-release.sh 用 TEST-UNSIGNED 标记测试发行文件名"
+  no "package-release.sh 仍给测试发行文件名加标记（文件名应与正式版同形）"
 else
-  no "package-release.sh 缺少 TEST-UNSIGNED 文件名标记"
+  ok "测试发行文件名与正式版同形（VideoFlow_<ver>_aarch64.dmg / .app.zip）"
 fi
-if grep -q '${BUILD_TAG}.dmg' "$PKG" && grep -q '${BUILD_TAG}.app.zip' "$PKG"; then
-  ok "DMG / app.zip 文件名都带构建标记（VideoFlow_<ver>_aarch64_TEST-UNSIGNED.*）"
+if grep -q 'BUILD_TAG="INTERNAL-TEST-' "$PKG"; then
+  ok "internal 构建仍保留 INTERNAL-TEST 文件名标记（与测试发行可区分）"
 else
-  no "测试发行文件名没有统一带构建标记"
+  no "internal 构建的 INTERNAL-TEST 文件名标记被误删"
+fi
+if grep -qF '"build_kind": "${BUILD_KIND}"' "$PKG" \
+   && grep -qF 'embed_dmg_notice "${OUT_DIR}/${DMG_NAME}" "TEST_RELEASE.txt"' "$PKG"; then
+  ok "unsigned 身份仍由 manifest build_kind 与 DMG 卷内 TEST_RELEASE.txt 承载"
+else
+  no "去掉文件名标记后，manifest build_kind 或 DMG 卷内 TEST_RELEASE.txt 缺失"
 fi
 
 # 验收要用测试 tag 实跑，validate 必须同时接受 v<version> 与 v<version>-test.<N>

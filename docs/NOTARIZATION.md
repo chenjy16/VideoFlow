@@ -294,7 +294,7 @@ CI 的签名模式完全由 Secrets 推导，**不做隐式降级**。
 | 推送 `v*` tag | `TEST_RELEASE=true`、`INTERNAL_BUILD=false`、`REQUIRE_NOTARIZATION=false`、`SIGNING_MODE=unsigned`、`ALLOW_UNSIGNED=1` |
 | Apple Secrets 是否存在 | **完全不检查**：`signing` / `notarize_creds` 两个判定步骤在 test 分支直接返回，不会因为“没有凭据”失败 |
 | Apple 公证步骤 | `if: env.INTERNAL_BUILD != 'true' && env.TEST_RELEASE != 'true'` → 跳过 |
-| 产物名 | `VideoFlow_0.1.0_aarch64_TEST-UNSIGNED.dmg` / `..._TEST-UNSIGNED.app.zip`；Artifact 名 `videoflow-test-release-<ver>-<sha>` |
+| 产物名 | `VideoFlow_0.1.0_aarch64.dmg` / `.app.zip`（与正式版同形，不带 unsigned 标记）；Artifact 名 `videoflow-test-release-<ver>-<sha>` |
 | 包内标记 | DMG 卷内 `TEST_RELEASE.txt`（写不进去直接中止发布） |
 | manifest | `build_kind: test-release`、`signing.mode: unsigned`、`signing.identity: null`、`notarization.status: NOT_NOTARIZED`、`ticket_stapled.dmg/app: false`、`distribution_notice: TEST RELEASE - UNSIGNED - NOT NOTARIZED` |
 | GitHub Release | `prerelease: true`，标题 `VideoFlow v0.1.0 - Test Release`；已存在同名 Release 时拒绝覆盖 |
